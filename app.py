@@ -1,4 +1,3 @@
-```python id="g4yozj"
 import asyncio
 import io
 import json
