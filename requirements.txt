@@ -1,11 +1,6 @@
-
 streamlit
 requests
 aiohttp
 beautifulsoup4
 lxml
 pandas
-nest_asyncio
-
-
-python-dotenv
