@@ -253,7 +253,7 @@ def extract_thread_ids(
     while len(collected) < limit:
 
         # -----------------------------------------
-        # PAGE URL
+        # BUILD PAGE URL
         # -----------------------------------------
 
         if page == 1:
@@ -306,9 +306,17 @@ def extract_thread_ids(
 
                 href = link["href"]
 
-                # works for all archives
+                # =====================================
+                # WORKS FOR:
+                #
+                # /g/thread/123456/
+                # /a/thread/123456/#p123
+                # https://desuarchive.org/g/thread/123456/
+                # https://arch.b4k.dev/v/thread/123456/
+                # =====================================
+
                 match = re.search(
-                    r"/thread/(\d+)",
+                    r"/[a-zA-Z0-9]+/thread/(\d+)",
                     href
                 )
 
@@ -321,6 +329,7 @@ def extract_thread_ids(
                     continue
 
                 seen.add(thread_id)
+
                 collected.append(thread_id)
 
                 found_any = True
@@ -374,14 +383,30 @@ def parse_thread(
 
     seen = set()
 
-    # many archives structure posts differently
-    candidates = soup.find_all(
-        [
-            "article",
-            "blockquote",
-            "div",
-            "section"
-        ]
+    candidates = []
+
+    # =========================================
+    # DESUARCHIVE / B4K
+    # =========================================
+
+    candidates.extend(
+        soup.select(".post_data")
+    )
+
+    candidates.extend(
+        soup.select(".text")
+    )
+
+    # =========================================
+    # WAROSU / 4PLEBS
+    # =========================================
+
+    candidates.extend(
+        soup.find_all("blockquote")
+    )
+
+    candidates.extend(
+        soup.find_all("article")
     )
 
     for idx, block in enumerate(candidates):
@@ -393,7 +418,7 @@ def parse_thread(
             )
         )
 
-        if len(text) < 40:
+        if len(text) < 20:
             continue
 
         key = text[:500]
@@ -702,9 +727,9 @@ if st.button("Start Crawl"):
 
     progress.progress(100)
 
-    # -----------------------------------------
+    # =========================================
     # FILTERS
-    # -----------------------------------------
+    # =========================================
 
     if keyword_filter:
 
@@ -733,9 +758,9 @@ if st.button("Start Crawl"):
 
         st.stop()
 
-    # -----------------------------------------
+    # =========================================
     # DATAFRAME
-    # -----------------------------------------
+    # =========================================
 
     df = pd.DataFrame(posts)
 
@@ -785,9 +810,9 @@ if st.button("Start Crawl"):
         use_container_width=True
     )
 
-    # -----------------------------------------
+    # =========================================
     # EXPORT FILES
-    # -----------------------------------------
+    # =========================================
 
     export_files = {}
 
