@@ -21,7 +21,8 @@ from bs4 import BeautifulSoup
 HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36"
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/124.0 Safari/537.36"
     )
 }
 
@@ -34,36 +35,33 @@ DATA_DIR.mkdir(exist_ok=True)
 # =====================================================
 
 ARCHIVES = {
+
     "warosu": {
         "base": "https://warosu.org",
         "page1": "/{board}/",
         "pageN": "/{board}/?task=page&page={page}",
         "thread": "/{board}/thread/{thread_id}",
-        "thread_regex": r"/{board}/thread/(\d+)"
     },
 
     "4plebs": {
         "base": "https://archive.4plebs.org",
         "page1": "/{board}/",
         "pageN": "/{board}/page/{page}/",
-        "thread": "/{board}/thread/{thread_id}",
-        "thread_regex": r"/{board}/thread/(\d+)"
+        "thread": "/{board}/thread/{thread_id}/",
     },
 
     "desuarchive": {
         "base": "https://desuarchive.org",
         "page1": "/{board}/",
         "pageN": "/{board}/page/{page}/",
-        "thread": "/{board}/thread/{thread_id}",
-        "thread_regex": r"/{board}/thread/(\d+)"
+        "thread": "/{board}/thread/{thread_id}/",
     },
 
     "b4k": {
         "base": "https://arch.b4k.dev",
         "page1": "/{board}/",
         "pageN": "/{board}/page/{page}/",
-        "thread": "/{board}/thread/{thread_id}",
-        "thread_regex": r"/{board}/thread/(\d+)"
+        "thread": "/{board}/thread/{thread_id}/",
     }
 }
 
@@ -78,9 +76,10 @@ st.set_page_config(
 )
 
 st.title("4chan Archive Crawler")
+
 st.caption(
-    "Bulk downloader for Warosu, 4plebs, "
-    "Desuarchive and b4k archives"
+    "Supports Warosu, 4plebs, "
+    "Desuarchive and b4k"
 )
 
 
@@ -123,8 +122,8 @@ with st.sidebar:
     concurrency = st.slider(
         "Concurrency",
         min_value=1,
-        max_value=20,
-        value=3
+        max_value=50,
+        value=5
     )
 
     timeout_seconds = st.slider(
@@ -136,7 +135,13 @@ with st.sidebar:
 
     output_formats = st.multiselect(
         "Export formats",
-        ["json", "jsonl", "csv", "txt", "sqlite"],
+        [
+            "json",
+            "jsonl",
+            "csv",
+            "txt",
+            "sqlite"
+        ],
         default=["json"]
     )
 
@@ -154,23 +159,28 @@ def normalize_whitespace(text):
     ).strip()
 
 
-def html_to_text(html):
+# =====================================================
+# URL BUILDER
+# =====================================================
 
-    soup = BeautifulSoup(
-        html,
-        "html.parser"
+def build_thread_url(
+    archive_name,
+    board_name,
+    thread_id
+):
+
+    config = ARCHIVES[archive_name]
+
+    path = config["thread"].format(
+        board=board_name,
+        thread_id=thread_id
     )
 
-    return normalize_whitespace(
-        soup.get_text(
-            " ",
-            strip=True
-        )
-    )
+    return config["base"] + path
 
 
 # =====================================================
-# THREAD ID EXTRACTION
+# THREAD EXTRACTION
 # =====================================================
 
 def extract_thread_ids(
@@ -188,6 +198,7 @@ def extract_thread_ids(
 
     while len(collected) < limit:
 
+        # build page URL
         if page == 1:
 
             path = config["page1"].format(
@@ -203,7 +214,7 @@ def extract_thread_ids(
 
         url = config["base"] + path
 
-        print(f"FETCHING PAGE: {url}")
+        print(f"\nFETCHING PAGE: {url}")
 
         try:
 
@@ -224,20 +235,14 @@ def extract_thread_ids(
 
             soup = BeautifulSoup(
                 response.text,
-                "lxml"
-            )
-
-            links = soup.find_all(
-                "a",
-                href=True
+                "html.parser"
             )
 
             found_any = False
 
-            regex = config[
-                "thread_regex"
-            ].format(
-                board=re.escape(board_name)
+            links = soup.find_all(
+                "a",
+                href=True
             )
 
             for link in links:
@@ -245,7 +250,7 @@ def extract_thread_ids(
                 href = link["href"]
 
                 match = re.search(
-                    regex,
+                    rf"/{re.escape(board_name)}/thread/(\d+)",
                     href
                 )
 
@@ -257,10 +262,14 @@ def extract_thread_ids(
                 if thread_id in seen:
                     continue
 
-                found_any = True
-
                 seen.add(thread_id)
                 collected.append(thread_id)
+
+                found_any = True
+
+                print(
+                    f"FOUND THREAD: {thread_id}"
+                )
 
                 if len(collected) >= limit:
                     break
@@ -268,7 +277,7 @@ def extract_thread_ids(
             if not found_any:
 
                 print(
-                    "NO THREADS FOUND ON PAGE"
+                    "NO THREADS FOUND"
                 )
 
                 break
@@ -277,30 +286,14 @@ def extract_thread_ids(
 
         except Exception as e:
 
-            print("ERROR:", e)
+            print(
+                "EXTRACTION ERROR:",
+                e
+            )
+
             break
 
     return collected[:limit]
-
-
-# =====================================================
-# THREAD URL
-# =====================================================
-
-def build_thread_url(
-    archive_name,
-    board_name,
-    thread_id
-):
-
-    config = ARCHIVES[archive_name]
-
-    path = config["thread"].format(
-        board=board_name,
-        thread_id=thread_id
-    )
-
-    return config["base"] + path
 
 
 # =====================================================
@@ -321,15 +314,19 @@ def parse_thread(
 
     posts = []
 
-    blocks = soup.find_all(
+    seen = set()
+
+    # all possible containers
+    candidates = soup.find_all(
         [
-            "blockquote",
             "article",
-            "div"
+            "blockquote",
+            "div",
+            "section"
         ]
     )
 
-    for idx, block in enumerate(blocks):
+    for idx, block in enumerate(candidates):
 
         text = normalize_whitespace(
             block.get_text(
@@ -338,10 +335,18 @@ def parse_thread(
             )
         )
 
-        if len(text) < 20:
+        if len(text) < 40:
             continue
 
+        key = text[:500]
+
+        if key in seen:
+            continue
+
+        seen.add(key)
+
         posts.append({
+
             "archive": archive_name,
             "board": board_name,
             "thread_id": thread_id,
@@ -350,6 +355,7 @@ def parse_thread(
             "author": "Anonymous",
             "timestamp": "",
             "content": text,
+
             "url": build_thread_url(
                 archive_name,
                 board_name,
@@ -357,25 +363,11 @@ def parse_thread(
             )
         })
 
-    # dedupe
-    unique = []
-    seen = set()
-
-    for post in posts:
-
-        key = post["content"][:300]
-
-        if key in seen:
-            continue
-
-        seen.add(key)
-        unique.append(post)
-
-    return unique
+    return posts
 
 
 # =====================================================
-# ASYNC FETCH
+# FETCH THREAD
 # =====================================================
 
 async def fetch_thread(
@@ -406,8 +398,8 @@ async def fetch_thread(
                 if response.status != 200:
 
                     print(
-                        "BAD THREAD STATUS:",
-                        response.status
+                        f"BAD THREAD STATUS: "
+                        f"{response.status}"
                     )
 
                     return []
@@ -455,7 +447,8 @@ async def scrape_threads(
     )
 
     connector = aiohttp.TCPConnector(
-        limit=concurrency
+        limit=concurrency,
+        ssl=False
     )
 
     async with aiohttp.ClientSession(
@@ -484,6 +477,7 @@ async def scrape_threads(
     posts = []
 
     for result in results:
+
         posts.extend(result)
 
     return posts
@@ -532,7 +526,7 @@ def export_txt(posts):
     for post in posts:
 
         output.append(
-            f"[{post['thread_id']}]"
+            f"[THREAD {post['thread_id']}]"
         )
 
         output.append(
@@ -558,7 +552,7 @@ def export_sqlite(
     df.to_sql(
         "posts",
         conn,
-        if_exists="append",
+        if_exists="replace",
         index=False
     )
 
@@ -613,7 +607,7 @@ if st.button("Start Crawl"):
     if not thread_ids:
 
         st.error(
-            "No thread IDs found"
+            "No thread IDs found."
         )
 
         st.stop()
@@ -634,6 +628,7 @@ if st.button("Start Crawl"):
 
     progress.progress(100)
 
+    # filters
     if keyword_filter:
 
         posts = [
@@ -656,11 +651,12 @@ if st.button("Start Crawl"):
     if not posts:
 
         st.error(
-            "No posts collected"
+            "No posts collected."
         )
 
         st.stop()
 
+    # dataframe
     df = pd.DataFrame(posts)
 
     elapsed = (
@@ -668,8 +664,7 @@ if st.button("Start Crawl"):
     )
 
     st.success(
-        f"Collected "
-        f"{len(df)} posts"
+        f"Collected {len(df)} posts"
     )
 
     st.caption(
@@ -697,8 +692,8 @@ if st.button("Start Crawl"):
     with col3:
 
         st.metric(
-            "Authors",
-            df["author"].nunique()
+            "Archives",
+            df["archive"].nunique()
         )
 
     st.divider()
@@ -709,6 +704,10 @@ if st.button("Start Crawl"):
         df.head(1000),
         use_container_width=True
     )
+
+    # =====================================================
+    # EXPORT FILES
+    # =====================================================
 
     export_files = {}
 
@@ -773,5 +772,5 @@ if st.button("Start Crawl"):
 st.divider()
 
 st.caption(
-    "Research/educational use only."
+    "Research / educational use only."
 )
