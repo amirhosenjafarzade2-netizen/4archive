@@ -227,85 +227,44 @@ def build_thread_url(archive, board_name, thread_id):
 
 def parse_thread(html, thread_id, board_name, archive_name):
 
-    soup = BeautifulSoup(html, "lxml")
+    soup = BeautifulSoup(html, "html.parser")
 
     posts = []
 
-    # Different archives use different structures
-    selectors = [
-        "article.post",
-        "div.post",
-        "div.thread > div",
-        "div.reply",
-    ]
+    # Much more permissive extraction
+    text_blocks = soup.find_all(["blockquote", "article", "div"])
 
-    articles = []
+    for index, block in enumerate(text_blocks):
 
-    # DEBUG
-    print(f"HTML SIZE: {len(html)}")
-
-    for selector in selectors:
-        found = soup.select(selector)
-
-        if found:
-            articles = found
-            break
-
-    for index, article in enumerate(articles):
-
-        # Try multiple possible content selectors
-        blockquote = (
-            article.select_one("blockquote")
-            or article.select_one("div.text")
-            or article.select_one("div.post_comment")
-            or article.select_one("div.body")
+        text = normalize_whitespace(
+            block.get_text(" ", strip=True)
         )
 
-        if not blockquote:
+        # Skip tiny/noisy blocks
+        if len(text) < 20:
             continue
 
-        raw_html = str(blockquote)
+        # Skip navigation garbage
+        bad_words = [
+            "Reply",
+            "Catalog",
+            "Archived",
+            "Report",
+            "Index"
+        ]
 
-        content = html_to_text(raw_html)
-
-        if not content.strip():
+        if text in bad_words:
             continue
-
-        if len(content) < 2:
-            continue
-
-        author = "Anonymous"
-
-        author_el = (
-            article.select_one("span.name")
-            or article.select_one("span.postername")
-            or article.select_one("div.name")
-        )
-
-        if author_el:
-            author = author_el.get_text(strip=True)
-
-        timestamp = ""
-
-        time_el = (
-            article.select_one("time")
-            or article.select_one("span.dateTime")
-        )
-
-        if time_el:
-            timestamp = time_el.get("datetime", "") or time_el.get_text(strip=True)
-
-        post_id = article.get("id", "")
 
         posts.append({
             "archive": archive_name,
             "board": board_name,
             "thread_id": thread_id,
-            "post_id": post_id,
+            "post_id": f"{thread_id}_{index}",
             "is_op": index == 0,
-            "author": author,
-            "timestamp": timestamp,
-            "content": content,
+            "author": "Anonymous",
+            "timestamp": "",
+            "content": text,
             "url": build_thread_url(
                 archive_name,
                 board_name,
@@ -313,7 +272,21 @@ def parse_thread(html, thread_id, board_name, archive_name):
             )
         })
 
-    return posts
+    # Remove duplicates
+    unique_posts = []
+    seen = set()
+
+    for post in posts:
+
+        key = post["content"][:200]
+
+        if key in seen:
+            continue
+
+        seen.add(key)
+        unique_posts.append(post)
+
+    return unique_posts
 
 
 async def fetch_thread(
