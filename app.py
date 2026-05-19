@@ -13,26 +13,10 @@ import requests
 import streamlit as st
 from bs4 import BeautifulSoup
 
+
 # =====================================================
 # CONFIG
 # =====================================================
-st.set_page_config(
-    page_title="4chan Archive Crawler",
-    layout="wide",
-    page_icon="📥"
-)
-
-st.title("4chan Archive Crawler")
-st.caption("Bulk downloader for 4plebs & warosu archived threads")
-
-# Try to apply nest_asyncio (important for Streamlit)
-try:
-    import nest_asyncio
-    nest_asyncio.apply()
-except ImportError:
-    st.error("❌ Please install nest_asyncio first:")
-    st.code("pip install nest_asyncio")
-    st.stop()
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
@@ -46,264 +30,556 @@ ARCHIVES = {
 DATA_DIR = Path("exports")
 DATA_DIR.mkdir(exist_ok=True)
 
+
+# =====================================================
+# PAGE
+# =====================================================
+
+st.set_page_config(
+    page_title="4chan Archive Crawler",
+    layout="wide"
+)
+
+st.title("4chan Archive Crawler")
+st.caption("Bulk downloader for archived 4chan threads")
+
+
 # =====================================================
 # SIDEBAR
 # =====================================================
+
 with st.sidebar:
+
     st.header("Crawler Settings")
-    
-    archive_name = st.selectbox("Archive", list(ARCHIVES.keys()), index=0)
-    board = st.text_input("Board", value="biz")
-    thread_limit = st.number_input("Max threads to fetch", min_value=1, max_value=5000, value=100)
-    
-    keyword_filter = st.text_input("Keyword filter (optional)")
-    op_only = st.checkbox("Only OP posts", value=False)
-    remove_empty = st.checkbox("Remove empty posts", value=True)
-    
-    concurrency = st.slider("Concurrency (speed)", min_value=1, max_value=30, value=12)
-    timeout_seconds = st.slider("Timeout per request (seconds)", 5, 60, 25)
-    
+
+    archive_name = st.selectbox(
+        "Archive",
+        list(ARCHIVES.keys())
+    )
+
+    board = st.text_input(
+        "Board",
+        value="biz"
+    )
+
+    thread_limit = st.number_input(
+        "Threads to fetch",
+        min_value=1,
+        max_value=100000,
+        value=100
+    )
+
+    keyword_filter = st.text_input(
+        "Keyword filter"
+    )
+
+    op_only = st.checkbox("Only OP posts")
+
+    remove_empty = st.checkbox(
+        "Remove empty posts",
+        value=True
+    )
+
+    concurrency = st.slider(
+        "Concurrency",
+        min_value=1,
+        max_value=50,
+        value=10
+    )
+
+    timeout_seconds = st.slider(
+        "Request timeout",
+        min_value=5,
+        max_value=120,
+        value=30
+    )
+
     output_formats = st.multiselect(
         "Export formats",
         ["json", "jsonl", "csv", "txt", "sqlite"],
-        default=["json", "csv"]
+        default=["json"]
     )
 
+
 # =====================================================
-# HELPER FUNCTIONS
+# HELPERS
 # =====================================================
+
+
 def normalize_whitespace(text):
     return re.sub(r"\s+", " ", text).strip()
 
+
+
 def html_to_text(html):
-    soup = BeautifulSoup(html, "lxml")
-    return normalize_whitespace(soup.get_text(" ", strip=True))
+    soup = BeautifulSoup(html, "html.parser")
+    return normalize_whitespace(
+        soup.get_text(" ", strip=True)
+    )
+
+
 
 def extract_thread_ids_4plebs(board_name, limit):
+
     collected = []
     seen = set()
+
     page = 1
-    
+
     while len(collected) < limit:
+
         url = f"https://archive.4plebs.org/{board_name}/page/{page}/"
-        try:
-            resp = requests.get(url, headers=HEADERS, timeout=30)
-            if resp.status_code != 200:
-                break
-                
-            soup = BeautifulSoup(resp.text, "lxml")
-            links = soup.select("a[href*='/thread/']")
-            
-            for link in links:
-                match = re.search(r"/thread/(\d+)", link.get("href", ""))
-                if match:
-                    tid = match.group(1)
-                    if tid not in seen:
-                        seen.add(tid)
-                        collected.append(tid)
-                        if len(collected) >= limit:
-                            break
-            page += 1
-        except:
+
+        response = requests.get(
+            url,
+            headers=HEADERS,
+            timeout=30
+        )
+
+        if response.status_code != 200:
             break
+
+        soup = BeautifulSoup(response.text, "lxml")
+
+        links = soup.select("a[href*='/thread/']")
+
+        if not links:
+            break
+
+        for link in links:
+
+            href = link.get("href", "")
+
+            match = re.search(r"/thread/(\d+)", href)
+
+            if not match:
+                continue
+
+            tid = match.group(1)
+
+            if tid in seen:
+                continue
+
+            seen.add(tid)
+            collected.append(tid)
+
+            if len(collected) >= limit:
+                break
+
+        page += 1
+
     return collected[:limit]
+
+
 
 def extract_thread_ids_warosu(board_name, limit):
+
     collected = []
     seen = set()
+
     url = f"https://warosu.org/{board_name}/"
-    try:
-        resp = requests.get(url, headers=HEADERS, timeout=30)
-        if resp.status_code != 200:
-            return []
-            
-        soup = BeautifulSoup(resp.text, "lxml")
-        links = soup.select("a[href*='/thread/']")
-        
-        for link in links:
-            match = re.search(r"/thread/(\d+)", link.get("href", ""))
-            if match:
-                tid = match.group(1)
-                if tid not in seen:
-                    seen.add(tid)
-                    collected.append(tid)
-                    if len(collected) >= limit:
-                        break
-    except:
-        pass
+
+    response = requests.get(
+        url,
+        headers=HEADERS,
+        timeout=30
+    )
+
+    if response.status_code != 200:
+        return []
+
+    soup = BeautifulSoup(response.text, "lxml")
+
+    links = soup.select("a[href*='/thread/']")
+
+    for link in links:
+
+        href = link.get("href", "")
+
+        match = re.search(r"/thread/(\d+)", href)
+
+        if not match:
+            continue
+
+        tid = match.group(1)
+
+        if tid in seen:
+            continue
+
+        seen.add(tid)
+        collected.append(tid)
+
+        if len(collected) >= limit:
+            break
+
     return collected[:limit]
 
+
+
 def build_thread_url(archive, board_name, thread_id):
+
     if archive == "4plebs":
         return f"https://archive.4plebs.org/{board_name}/thread/{thread_id}"
+
     return f"https://warosu.org/{board_name}/thread/{thread_id}"
 
+
+
 def parse_thread(html, thread_id, board_name, archive_name):
+
     soup = BeautifulSoup(html, "lxml")
+
     posts = []
-    
-    for idx, article in enumerate(soup.select("article.post")):
+
+    articles = soup.select("article.post")
+
+    for index, article in enumerate(articles):
+
         blockquote = article.select_one("blockquote")
+
         if not blockquote:
             continue
-            
-        content = html_to_text(blockquote.decode_contents())
-        
+
+        raw_html = blockquote.decode_contents()
+
+        content = html_to_text(raw_html)
+
         author = "Anonymous"
+
         author_el = article.select_one("span.name")
+
         if author_el:
             author = author_el.get_text(strip=True)
-            
+
         timestamp = ""
+
         time_el = article.select_one("time")
+
         if time_el:
             timestamp = time_el.get("datetime", "")
-            
-        post_id = article.get("id", "").replace("p", "")
-        
+
+        post_id = article.get("id", "")
+
         posts.append({
             "archive": archive_name,
             "board": board_name,
             "thread_id": thread_id,
             "post_id": post_id,
-            "is_op": idx == 0,
+            "is_op": index == 0,
             "author": author,
             "timestamp": timestamp,
             "content": content,
-            "url": build_thread_url(archive_name, board_name, thread_id)
+            "url": build_thread_url(
+                archive_name,
+                board_name,
+                thread_id
+            )
         })
+
     return posts
 
-async def fetch_thread(session, semaphore, archive, board_name, thread_id, timeout):
-    url = build_thread_url(archive, board_name, thread_id)
+
+async def fetch_thread(
+    session,
+    semaphore,
+    archive,
+    board_name,
+    thread_id,
+    timeout_seconds
+):
+
+    url = build_thread_url(
+        archive,
+        board_name,
+        thread_id
+    )
+
     async with semaphore:
+
         try:
-            async with session.get(url, timeout=timeout) as resp:
-                if resp.status != 200:
+            async with session.get(
+                url,
+                timeout=timeout_seconds
+            ) as response:
+
+                if response.status != 200:
                     return []
-                html = await resp.text()
-                return parse_thread(html, thread_id, board_name, archive)
-        except:
+
+                html = await response.text()
+
+                return parse_thread(
+                    html,
+                    thread_id,
+                    board_name,
+                    archive
+                )
+
+        except Exception:
             return []
 
-async def scrape_threads(archive, board_name, thread_ids, concurrency, timeout):
+
+async def scrape_threads(
+    archive,
+    board_name,
+    thread_ids,
+    concurrency,
+    timeout_seconds
+):
+
     semaphore = asyncio.Semaphore(concurrency)
-    async with aiohttp.ClientSession(headers=HEADERS) as session:
+
+    connector = aiohttp.TCPConnector(limit=concurrency)
+
+    async with aiohttp.ClientSession(
+        headers=HEADERS,
+        connector=connector
+    ) as session:
+
         tasks = [
-            fetch_thread(session, semaphore, archive, board_name, tid, timeout)
-            for tid in thread_ids
-        ]
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-        
-    posts = []
-    for result in results:
-        if isinstance(result, list):
-            posts.extend(result)
-    return posts
-
-# =====================================================
-# EXPORT FUNCTIONS
-# =====================================================
-def build_zip(files_dict):
-    memory_file = io.BytesIO()
-    with zipfile.ZipFile(memory_file, "w", zipfile.ZIP_DEFLATED) as zf:
-        for filename, content in files_dict.items():
-            zf.writestr(filename, content)
-    memory_file.seek(0)
-    return memory_file
-
-# =====================================================
-# MAIN APP
-# =====================================================
-if st.button("🚀 Start Crawling", type="primary", use_container_width=True):
-    start_time = datetime.now()
-    
-    # Step 1: Get thread IDs
-    with st.spinner("Collecting thread IDs..."):
-        if archive_name == "4plebs":
-            thread_ids = extract_thread_ids_4plebs(board, thread_limit)
-        else:
-            thread_ids = extract_thread_ids_warosu(board, thread_limit)
-    
-    st.success(f"✅ Found {len(thread_ids)} threads")
-
-    # Step 2: Scrape threads
-    progress_bar = st.progress(0)
-    status_text = st.empty()
-    
-    try:
-        posts = asyncio.run(
-            scrape_threads(
-                archive_name, 
-                board, 
-                thread_ids, 
-                concurrency, 
+            fetch_thread(
+                session,
+                semaphore,
+                archive,
+                board_name,
+                tid,
                 timeout_seconds
             )
+            for tid in thread_ids
+        ]
+
+        results = await asyncio.gather(*tasks)
+
+    posts = []
+
+    for result in results:
+        posts.extend(result)
+
+    return posts
+
+
+# =====================================================
+# EXPORTS
+# =====================================================
+
+
+def export_json(df):
+    return df.to_json(
+        orient="records",
+        indent=2,
+        force_ascii=False
+    )
+
+
+
+def export_csv(df):
+    return df.to_csv(index=False)
+
+
+
+def export_jsonl(posts):
+
+    lines = []
+
+    for post in posts:
+        lines.append(
+            json.dumps(post, ensure_ascii=False)
         )
-        
-        progress_bar.progress(100)
-        status_text.success("✅ Scraping completed!")
 
-        # Filtering
-        if remove_empty:
-            posts = [p for p in posts if p["content"].strip()]
-        if keyword_filter:
-            kw = keyword_filter.lower()
-            posts = [p for p in posts if kw in p["content"].lower()]
-        if op_only:
-            posts = [p for p in posts if p["is_op"]]
+    return "\n".join(lines)
 
-        if not posts:
-            st.warning("No posts left after filtering.")
-            st.stop()
 
-        df = pd.DataFrame(posts)
 
-        # Statistics
-        col1, col2, col3, col4 = st.columns(4)
-        col1.metric("Total Posts", len(df))
-        col2.metric("Threads", df['thread_id'].nunique())
-        col3.metric("Unique Authors", df['author'].nunique())
-        col4.metric("OP Posts", int(df['is_op'].sum()))
+def export_txt(posts):
 
-        st.subheader("Preview")
-        st.dataframe(df.head(300), use_container_width=True)
+    output = []
 
-        # Export
-        export_files = {}
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M")
+    for post in posts:
 
-        if "json" in output_formats:
-            export_files[f"{board}_threads_{timestamp}.json"] = df.to_json(orient="records", indent=2, force_ascii=False)
-        if "csv" in output_formats:
-            export_files[f"{board}_threads_{timestamp}.csv"] = df.to_csv(index=False)
-        if "jsonl" in output_formats:
-            export_files[f"{board}_threads_{timestamp}.jsonl"] = "\n".join(json.dumps(p, ensure_ascii=False) for p in posts)
-        if "txt" in output_formats:
-            txt_lines = [f"[{p['thread_id']}] {p['author']} | {p['timestamp']}\n{p['content']}\n{'─'*80}" for p in posts]
-            export_files[f"{board}_threads_{timestamp}.txt"] = "\n".join(txt_lines)
-        if "sqlite" in output_formats:
-            db_path = DATA_DIR / f"{board}_threads.db"
-            df.to_sql("posts", sqlite3.connect(db_path), if_exists="append", index=False)
-            export_files[f"{board}_threads_{timestamp}.db"] = db_path.read_bytes()
+        output.append(
+            f"[{post['thread_id']}] {post['author']}"
+        )
 
-        if export_files:
-            zip_buffer = build_zip(export_files)
-            st.download_button(
-                label="📥 Download All Files (ZIP)",
-                data=zip_buffer,
-                file_name=f"{board}_archive_{timestamp}.zip",
-                mime="application/zip",
-                use_container_width=True
-            )
+        output.append(post["content"])
+        output.append("-" * 80)
 
-        elapsed = datetime.now() - start_time
-        st.success(f"✅ Finished in {elapsed}")
+    return "\n".join(output)
 
-    except Exception as e:
-        st.error(f"Error: {e}")
-        st.exception(e)
+
+
+def export_sqlite(df, filename="threads.db"):
+
+    conn = sqlite3.connect(filename)
+
+    df.to_sql(
+        "posts",
+        conn,
+        if_exists="append",
+        index=False
+    )
+
+    conn.close()
+
+
+
+def build_zip(files_dict):
+
+    memory_file = io.BytesIO()
+
+    with zipfile.ZipFile(
+        memory_file,
+        mode="w",
+        compression=zipfile.ZIP_DEFLATED
+    ) as zf:
+
+        for filename, content in files_dict.items():
+            zf.writestr(filename, content)
+
+    memory_file.seek(0)
+
+    return memory_file
+
+
+# =====================================================
+# MAIN
+# =====================================================
+
+if st.button("Start Crawl"):
+
+    start_time = datetime.utcnow()
+
+    st.info("Collecting thread IDs...")
+
+    if archive_name == "4plebs":
+        thread_ids = extract_thread_ids_4plebs(
+            board,
+            thread_limit
+        )
+    else:
+        thread_ids = extract_thread_ids_warosu(
+            board,
+            thread_limit
+        )
+
+    st.success(f"Collected {len(thread_ids)} thread IDs")
+
+    progress = st.progress(0)
+
+    posts = asyncio.run(
+        scrape_threads(
+            archive_name,
+            board,
+            thread_ids,
+            concurrency,
+            timeout_seconds
+        )
+    )
+
+    progress.progress(100)
+
+    if remove_empty:
+        posts = [
+            p for p in posts
+            if p["content"]
+        ]
+
+    if keyword_filter:
+        posts = [
+            p for p in posts
+            if keyword_filter.lower()
+            in p["content"].lower()
+        ]
+
+    if op_only:
+        posts = [
+            p for p in posts
+            if p["is_op"]
+        ]
+
+    if not posts:
+        st.warning("No posts collected")
+        st.stop()
+
+    df = pd.DataFrame(posts)
+
+    st.success(f"Collected {len(df)} posts")
+
+    elapsed = datetime.utcnow() - start_time
+
+    st.caption(f"Finished in {elapsed}")
+
+    # =====================================
+    # STATS
+    # =====================================
+
+    col1, col2, col3, col4 = st.columns(4)
+
+    with col1:
+        st.metric("Posts", len(df))
+
+    with col2:
+        st.metric(
+            "Threads",
+            df['thread_id'].nunique()
+        )
+
+    with col3:
+        st.metric(
+            "Authors",
+            df['author'].nunique()
+        )
+
+    with col4:
+        st.metric(
+            "OP Posts",
+            int(df['is_op'].sum())
+        )
+
+    st.divider()
+
+    st.subheader("Preview")
+
+    st.dataframe(
+        df.head(1000),
+        use_container_width=True
+    )
+
+    # =====================================
+    # EXPORTS
+    # =====================================
+
+    export_files = {}
+
+    if "json" in output_formats:
+        export_files["threads.json"] = export_json(df)
+
+    if "csv" in output_formats:
+        export_files["threads.csv"] = export_csv(df)
+
+    if "jsonl" in output_formats:
+        export_files["threads.jsonl"] = export_jsonl(posts)
+
+    if "txt" in output_formats:
+        export_files["threads.txt"] = export_txt(posts)
+
+    if "sqlite" in output_formats:
+        sqlite_path = DATA_DIR / "threads.db"
+        export_sqlite(df, sqlite_path)
+
+        with open(sqlite_path, "rb") as f:
+            export_files["threads.db"] = f.read()
+
+    zip_buffer = build_zip(export_files)
+
+    st.download_button(
+        label="Download Export ZIP",
+        data=zip_buffer,
+        file_name=f"{board}_archive_export.zip",
+        mime="application/zip"
+    )
+
 
 st.divider()
-st.caption("For research and educational use only • Respect archive rules")
+
+st.caption(
+    "Research/educational use only. Respect archive policies and rate limits."
+)
