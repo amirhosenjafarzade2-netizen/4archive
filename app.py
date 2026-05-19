@@ -146,11 +146,13 @@ def extract_thread_ids_4plebs(board_name, limit):
         if not links:
             break
 
+        found_new = False
+
         for link in links:
 
             href = link.get("href", "")
 
-            match = re.search(r"/thread/(\d+)", href)
+            match = re.search(r"/thread/(\\d+)", href)
 
             if not match:
                 continue
@@ -160,11 +162,16 @@ def extract_thread_ids_4plebs(board_name, limit):
             if tid in seen:
                 continue
 
+            found_new = True
+
             seen.add(tid)
             collected.append(tid)
 
             if len(collected) >= limit:
                 break
+
+        if not found_new:
+            break
 
         page += 1
 
@@ -177,40 +184,59 @@ def extract_thread_ids_warosu(board_name, limit):
     collected = []
     seen = set()
 
-    url = f"https://warosu.org/{board_name}/"
+    page = 0
 
-    response = requests.get(
-        url,
-        headers=HEADERS,
-        timeout=30
-    )
+    while len(collected) < limit:
 
-    if response.status_code != 200:
-        return []
+        if page == 0:
+            url = f"https://warosu.org/{board_name}/"
+        else:
+            url = f"https://warosu.org/{board_name}/?page={page}"
 
-    soup = BeautifulSoup(response.text, "lxml")
+        response = requests.get(
+            url,
+            headers=HEADERS,
+            timeout=30
+        )
 
-    links = soup.select("a[href*='/thread/']")
-
-    for link in links:
-
-        href = link.get("href", "")
-
-        match = re.search(r"/thread/(\d+)", href)
-
-        if not match:
-            continue
-
-        tid = match.group(1)
-
-        if tid in seen:
-            continue
-
-        seen.add(tid)
-        collected.append(tid)
-
-        if len(collected) >= limit:
+        if response.status_code != 200:
             break
+
+        soup = BeautifulSoup(response.text, "lxml")
+
+        links = soup.select("a[href*='/thread/']")
+
+        if not links:
+            break
+
+        found_new = False
+
+        for link in links:
+
+            href = link.get("href", "")
+
+            match = re.search(r"/thread/(\\d+)", href)
+
+            if not match:
+                continue
+
+            tid = match.group(1)
+
+            if tid in seen:
+                continue
+
+            found_new = True
+
+            seen.add(tid)
+            collected.append(tid)
+
+            if len(collected) >= limit:
+                break
+
+        if not found_new:
+            break
+
+        page += 1
 
     return collected[:limit]
 
