@@ -36,32 +36,84 @@ DATA_DIR.mkdir(exist_ok=True)
 
 ARCHIVES = {
 
+    # =========================================
+    # WAROSU
+    # =========================================
+
     "warosu": {
-        "base": "https://warosu.org",
-        "page1": "/{board}/",
-        "pageN": "/{board}/?task=page&page={page}",
-        "thread": "/{board}/thread/{thread_id}",
+
+        "base":
+            "https://warosu.org",
+
+        "page1":
+            "/{board}/",
+
+        "pageN":
+            "/{board}/?task=page&page={page}",
+
+        "thread":
+            "/{board}/thread/{thread_id}",
     },
+
+    # =========================================
+    # 4PLEBS
+    # =========================================
 
     "4plebs": {
-        "base": "https://archive.4plebs.org",
-        "page1": "/{board}/",
-        "pageN": "/{board}/page/{page}/",
-        "thread": "/{board}/thread/{thread_id}/",
+
+        "base":
+            "https://archive.4plebs.org",
+
+        "page1":
+            "/{board}/",
+
+        "pageN":
+            "/{board}/page/{page}/",
+
+        "thread":
+            "/{board}/thread/{thread_id}/",
     },
+
+    # =========================================
+    # DESUARCHIVE
+    # =========================================
 
     "desuarchive": {
-        "base": "https://desuarchive.org",
-        "page1": "/{board}/",
-        "pageN": "/{board}/page/{page}/",
-        "thread": "/{board}/thread/{thread_id}/",
+
+        "base":
+            "https://desuarchive.org",
+
+        "page1":
+            "/{board}/",
+
+        "pageN":
+            "/{board}/page/{page}/",
+
+        # IMPORTANT:
+        # no /{board}/ here
+        "thread":
+            "/thread/{thread_id}/",
     },
 
+    # =========================================
+    # B4K
+    # =========================================
+
     "b4k": {
-        "base": "https://arch.b4k.dev",
-        "page1": "/{board}/",
-        "pageN": "/{board}/page/{page}/",
-        "thread": "/{board}/thread/{thread_id}/",
+
+        "base":
+            "https://arch.b4k.dev",
+
+        "page1":
+            "/{board}/",
+
+        "pageN":
+            "/{board}/page/{page}/",
+
+        # IMPORTANT:
+        # no /{board}/ here
+        "thread":
+            "/thread/{thread_id}/",
     }
 }
 
@@ -176,7 +228,9 @@ def build_thread_url(
         thread_id=thread_id
     )
 
-    return config["base"] + path
+    return (
+        config["base"] + path
+    )
 
 
 # =====================================================
@@ -198,7 +252,10 @@ def extract_thread_ids(
 
     while len(collected) < limit:
 
-        # build page URL
+        # -----------------------------------------
+        # PAGE URL
+        # -----------------------------------------
+
         if page == 1:
 
             path = config["page1"].format(
@@ -249,8 +306,9 @@ def extract_thread_ids(
 
                 href = link["href"]
 
+                # works for all archives
                 match = re.search(
-                    rf"/{re.escape(board_name)}/thread/(\d+)",
+                    r"/thread/(\d+)",
                     href
                 )
 
@@ -316,7 +374,7 @@ def parse_thread(
 
     seen = set()
 
-    # all possible containers
+    # many archives structure posts differently
     candidates = soup.find_all(
         [
             "article",
@@ -347,20 +405,36 @@ def parse_thread(
 
         posts.append({
 
-            "archive": archive_name,
-            "board": board_name,
-            "thread_id": thread_id,
-            "post_id": f"{thread_id}_{idx}",
-            "is_op": idx == 0,
-            "author": "Anonymous",
-            "timestamp": "",
-            "content": text,
-
-            "url": build_thread_url(
+            "archive":
                 archive_name,
+
+            "board":
                 board_name,
-                thread_id
-            )
+
+            "thread_id":
+                thread_id,
+
+            "post_id":
+                f"{thread_id}_{idx}",
+
+            "is_op":
+                idx == 0,
+
+            "author":
+                "Anonymous",
+
+            "timestamp":
+                "",
+
+            "content":
+                text,
+
+            "url":
+                build_thread_url(
+                    archive_name,
+                    board_name,
+                    thread_id
+                )
         })
 
     return posts
@@ -628,7 +702,10 @@ if st.button("Start Crawl"):
 
     progress.progress(100)
 
-    # filters
+    # -----------------------------------------
+    # FILTERS
+    # -----------------------------------------
+
     if keyword_filter:
 
         posts = [
@@ -656,7 +733,10 @@ if st.button("Start Crawl"):
 
         st.stop()
 
-    # dataframe
+    # -----------------------------------------
+    # DATAFRAME
+    # -----------------------------------------
+
     df = pd.DataFrame(posts)
 
     elapsed = (
@@ -705,9 +785,9 @@ if st.button("Start Crawl"):
         use_container_width=True
     )
 
-    # =====================================================
+    # -----------------------------------------
     # EXPORT FILES
-    # =====================================================
+    # -----------------------------------------
 
     export_files = {}
 
