@@ -241,6 +241,9 @@ def parse_thread(html, thread_id, board_name, archive_name):
 
     articles = []
 
+    # DEBUG
+    print(f"HTML SIZE: {len(html)}")
+
     for selector in selectors:
         found = soup.select(selector)
 
@@ -266,6 +269,9 @@ def parse_thread(html, thread_id, board_name, archive_name):
         content = html_to_text(raw_html)
 
         if not content.strip():
+            continue
+
+        if len(content) < 2:
             continue
 
         author = "Anonymous"
@@ -330,22 +336,29 @@ async def fetch_thread(
         try:
             async with session.get(
                 url,
-                timeout=timeout_seconds
+                timeout=timeout_seconds,
+                ssl=False
             ) as response:
 
                 if response.status != 200:
+                    print(f"BAD STATUS {response.status}: {url}")
                     return []
 
                 html = await response.text()
 
-                return parse_thread(
+                parsed = parse_thread(
                     html,
                     thread_id,
                     board_name,
                     archive
                 )
 
-        except Exception:
+                print(f"THREAD {thread_id}: {len(parsed)} posts")
+
+                return parsed
+
+        except Exception as e:
+            print(f"ERROR FETCHING {url}: {e}")
             return []
 
 
@@ -527,7 +540,8 @@ if st.button("Start Crawl"):
         ]
 
     if not posts:
-        st.warning("No posts collected")
+        st.error("No posts collected")
+        st.info("Check your terminal logs. The archive HTML structure may have changed or requests are blocked.")
         st.stop()
 
     df = pd.DataFrame(posts)
