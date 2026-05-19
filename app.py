@@ -66,7 +66,7 @@ with st.sidebar:
         "Threads to fetch",
         min_value=1,
         max_value=100000,
-        value=100
+        value=10
     )
 
     keyword_filter = st.text_input(
@@ -83,8 +83,8 @@ with st.sidebar:
     concurrency = st.slider(
         "Concurrency",
         min_value=1,
-        max_value=50,
-        value=10
+        max_value=20,
+        value=3
     )
 
     timeout_seconds = st.slider(
@@ -231,32 +231,63 @@ def parse_thread(html, thread_id, board_name, archive_name):
 
     posts = []
 
-    articles = soup.select("article.post")
+    # Different archives use different structures
+    selectors = [
+        "article.post",
+        "div.post",
+        "div.thread > div",
+        "div.reply",
+    ]
+
+    articles = []
+
+    for selector in selectors:
+        found = soup.select(selector)
+
+        if found:
+            articles = found
+            break
 
     for index, article in enumerate(articles):
 
-        blockquote = article.select_one("blockquote")
+        # Try multiple possible content selectors
+        blockquote = (
+            article.select_one("blockquote")
+            or article.select_one("div.text")
+            or article.select_one("div.post_comment")
+            or article.select_one("div.body")
+        )
 
         if not blockquote:
             continue
 
-        raw_html = blockquote.decode_contents()
+        raw_html = str(blockquote)
 
         content = html_to_text(raw_html)
 
+        if not content.strip():
+            continue
+
         author = "Anonymous"
 
-        author_el = article.select_one("span.name")
+        author_el = (
+            article.select_one("span.name")
+            or article.select_one("span.postername")
+            or article.select_one("div.name")
+        )
 
         if author_el:
             author = author_el.get_text(strip=True)
 
         timestamp = ""
 
-        time_el = article.select_one("time")
+        time_el = (
+            article.select_one("time")
+            or article.select_one("span.dateTime")
+        )
 
         if time_el:
-            timestamp = time_el.get("datetime", "")
+            timestamp = time_el.get("datetime", "") or time_el.get_text(strip=True)
 
         post_id = article.get("id", "")
 
