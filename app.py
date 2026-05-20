@@ -89,8 +89,6 @@ ARCHIVES = {
         "pageN":
             "/{board}/page/{page}/",
 
-        # IMPORTANT:
-        # no /{board}/ here
         "thread":
             "/thread/{thread_id}/",
     },
@@ -110,8 +108,6 @@ ARCHIVES = {
         "pageN":
             "/{board}/page/{page}/",
 
-        # IMPORTANT:
-        # no /{board}/ here
         "thread":
             "/thread/{thread_id}/",
     }
@@ -163,8 +159,16 @@ with st.sidebar:
         value=100
     )
 
-    keyword_filter = st.text_input(
-        "Keyword filter"
+    # =========================================
+    # NEW FILTERS
+    # =========================================
+
+    thread_keyword_filter = st.text_input(
+        "Thread subject / OP keyword filter"
+    )
+
+    post_keyword_filter = st.text_input(
+        "Post content keyword filter"
     )
 
     op_only = st.checkbox(
@@ -306,15 +310,6 @@ def extract_thread_ids(
 
                 href = link["href"]
 
-                # =====================================
-                # WORKS FOR:
-                #
-                # /g/thread/123456/
-                # /a/thread/123456/#p123
-                # https://desuarchive.org/g/thread/123456/
-                # https://arch.b4k.dev/v/thread/123456/
-                # =====================================
-
                 match = re.search(
                     r"/[a-zA-Z0-9]+/thread/(\d+)",
                     href
@@ -409,6 +404,39 @@ def parse_thread(
         soup.find_all("article")
     )
 
+    # =========================================
+    # THREAD SUBJECT
+    # =========================================
+
+    thread_subject = ""
+
+    subject_selectors = [
+        ".subject",
+        ".post_title",
+        ".title",
+        ".thread_title"
+    ]
+
+    for selector in subject_selectors:
+
+        el = soup.select_one(selector)
+
+        if el:
+
+            thread_subject = normalize_whitespace(
+                el.get_text(
+                    " ",
+                    strip=True
+                )
+            )
+
+            if thread_subject:
+                break
+
+    # =========================================
+    # POSTS
+    # =========================================
+
     for idx, block in enumerate(candidates):
 
         text = normalize_whitespace(
@@ -428,6 +456,8 @@ def parse_thread(
 
         seen.add(key)
 
+        is_op = idx == 0
+
         posts.append({
 
             "archive":
@@ -443,7 +473,10 @@ def parse_thread(
                 f"{thread_id}_{idx}",
 
             "is_op":
-                idx == 0,
+                is_op,
+
+            "thread_subject":
+                thread_subject,
 
             "author":
                 "Anonymous",
@@ -629,6 +662,10 @@ def export_txt(posts):
         )
 
         output.append(
+            f"SUBJECT: {post.get('thread_subject', '')}"
+        )
+
+        output.append(
             post["content"]
         )
 
@@ -728,18 +765,65 @@ if st.button("Start Crawl"):
     progress.progress(100)
 
     # =========================================
-    # FILTERS
+    # THREAD-LEVEL FILTER
     # =========================================
 
-    if keyword_filter:
+    if thread_keyword_filter:
+
+        keyword = (
+            thread_keyword_filter.lower()
+        )
+
+        matching_thread_ids = set()
+
+        for p in posts:
+
+            subject_match = (
+                keyword in
+                p.get(
+                    "thread_subject",
+                    ""
+                ).lower()
+            )
+
+            op_match = (
+                p["is_op"]
+                and
+                keyword in
+                p["content"].lower()
+            )
+
+            if subject_match or op_match:
+
+                matching_thread_ids.add(
+                    p["thread_id"]
+                )
 
         posts = [
 
             p for p in posts
 
-            if keyword_filter.lower()
+            if p["thread_id"]
+            in matching_thread_ids
+        ]
+
+    # =========================================
+    # POST-LEVEL FILTER
+    # =========================================
+
+    if post_keyword_filter:
+
+        posts = [
+
+            p for p in posts
+
+            if post_keyword_filter.lower()
             in p["content"].lower()
         ]
+
+    # =========================================
+    # OP ONLY
+    # =========================================
 
     if op_only:
 
