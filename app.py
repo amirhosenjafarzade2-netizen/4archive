@@ -262,7 +262,7 @@ def build_thread_url(
 
 
 # =====================================================
-# THREAD EXTRACTION
+# SMART RANGE THREAD EXTRACTION
 # =====================================================
 
 def extract_thread_ids(
@@ -278,13 +278,123 @@ def extract_thread_ids(
     collected = []
     seen = set()
 
-    page = 1
+    # =========================================
+    # FETCH FIRST PAGE
+    # =========================================
+
+    first_page_url = (
+        config["base"]
+        + config["page1"].format(
+            board=board_name
+        )
+    )
+
+    try:
+
+        response = requests.get(
+            first_page_url,
+            headers=HEADERS,
+            timeout=30
+        )
+
+        soup = BeautifulSoup(
+            response.text,
+            "html.parser"
+        )
+
+    except Exception as e:
+
+        print(
+            "INITIAL FETCH ERROR:",
+            e
+        )
+
+        return []
+
+    # =========================================
+    # GET INITIAL THREAD IDS
+    # =========================================
+
+    first_page_ids = []
+
+    links = soup.find_all(
+        "a",
+        href=True
+    )
+
+    for link in links:
+
+        href = link["href"]
+
+        match = re.search(
+            r"/[a-zA-Z0-9]+/thread/(\d+)",
+            href
+        )
+
+        if match:
+
+            tid = int(match.group(1))
+
+            if tid not in first_page_ids:
+
+                first_page_ids.append(tid)
+
+    if not first_page_ids:
+
+        return []
+
+    newest_id = max(first_page_ids)
+
+    threads_per_page = len(first_page_ids)
+
+    print(
+        f"NEWEST THREAD: "
+        f"{newest_id}"
+    )
+
+    print(
+        f"THREADS PER PAGE: "
+        f"{threads_per_page}"
+    )
+
+    # =========================================
+    # SMART PAGE JUMP
+    # =========================================
+
+    if range_start is not None:
+
+        estimated_distance = (
+            newest_id - range_start
+        )
+
+        estimated_page = max(
+            1,
+            estimated_distance // max(
+                1,
+                threads_per_page
+            )
+        )
+
+        page = int(estimated_page)
+
+        print(
+            f"JUMPING TO PAGE: "
+            f"{page}"
+        )
+
+    else:
+
+        page = 1
+
+    # =========================================
+    # MAIN LOOP
+    # =========================================
 
     while len(collected) < limit:
 
-        # -----------------------------------------
+        # -------------------------------------
         # BUILD PAGE URL
-        # -----------------------------------------
+        # -------------------------------------
 
         if page == 1:
 
@@ -327,6 +437,8 @@ def extract_thread_ids(
 
             found_any = False
 
+            page_thread_ids = []
+
             links = soup.find_all(
                 "a",
                 href=True
@@ -346,16 +458,20 @@ def extract_thread_ids(
 
                 thread_id = match.group(1)
 
-                if thread_id in seen:
-                    continue
-
                 numeric_thread_id = int(
                     thread_id
                 )
 
-                # =====================================
-                # OPTIMIZED RANGE STOP
-                # =====================================
+                page_thread_ids.append(
+                    numeric_thread_id
+                )
+
+                if thread_id in seen:
+                    continue
+
+                # =================================
+                # STOP WHEN BELOW RANGE
+                # =================================
 
                 if (
                     range_start is not None
@@ -363,15 +479,14 @@ def extract_thread_ids(
                 ):
 
                     print(
-                        "Reached lower bound. "
-                        "Stopping pagination."
+                        "PASSED LOWER RANGE."
                     )
 
                     return collected[:limit]
 
-                # =====================================
+                # =================================
                 # RANGE FILTER
-                # =====================================
+                # =================================
 
                 if (
                     range_start is not None
@@ -392,16 +507,56 @@ def extract_thread_ids(
                 found_any = True
 
                 print(
-                    f"FOUND THREAD: {thread_id}"
+                    f"FOUND THREAD: "
+                    f"{thread_id}"
                 )
 
                 if len(collected) >= limit:
                     break
 
+            # =====================================
+            # ADAPTIVE PAGE CORRECTION
+            # =====================================
+
+            if (
+                range_start is not None
+                and page_thread_ids
+            ):
+
+                highest = max(page_thread_ids)
+                lowest = min(page_thread_ids)
+
+                print(
+                    f"PAGE RANGE: "
+                    f"{highest} -> {lowest}"
+                )
+
+                # If page still newer than target
+                if lowest > range_end:
+
+                    jump = max(
+                        1,
+                        (
+                            lowest - range_end
+                        ) // max(
+                            1,
+                            threads_per_page
+                        )
+                    )
+
+                    page += jump
+
+                    print(
+                        f"SKIPPING FORWARD "
+                        f"{jump} PAGES"
+                    )
+
+                    continue
+
             if not found_any:
 
                 print(
-                    "NO THREADS FOUND ON PAGE"
+                    "NO THREADS FOUND"
                 )
 
             page += 1
@@ -839,7 +994,7 @@ if st.button("Start Crawl"):
     progress.progress(100)
 
     # =========================================
-    # THREAD-LEVEL FILTER
+    # THREAD FILTER
     # =========================================
 
     if thread_keyword_filter:
@@ -882,7 +1037,7 @@ if st.button("Start Crawl"):
         ]
 
     # =========================================
-    # POST-LEVEL FILTER
+    # POST FILTER
     # =========================================
 
     if post_keyword_filter:
