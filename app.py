@@ -1,7 +1,6 @@
 import asyncio
 import io
 import json
-import math
 import re
 import sqlite3
 import zipfile
@@ -31,7 +30,7 @@ DATA_DIR = Path("exports")
 DATA_DIR.mkdir(exist_ok=True)
 
 MAX_EMPTY_PAGES = 5
-MAX_SCAN_PAGES = 100000
+MAX_SCAN_PAGES = 50000
 
 
 # =====================================================
@@ -39,10 +38,6 @@ MAX_SCAN_PAGES = 100000
 # =====================================================
 
 ARCHIVES = {
-
-    # =========================================
-    # WAROSU
-    # =========================================
 
     "warosu": {
 
@@ -59,10 +54,6 @@ ARCHIVES = {
             "/{board}/thread/{thread_id}",
     },
 
-    # =========================================
-    # 4PLEBS
-    # =========================================
-
     "4plebs": {
 
         "base":
@@ -78,10 +69,6 @@ ARCHIVES = {
             "/{board}/thread/{thread_id}/",
     },
 
-    # =========================================
-    # DESUARCHIVE
-    # =========================================
-
     "desuarchive": {
 
         "base":
@@ -96,10 +83,6 @@ ARCHIVES = {
         "thread":
             "/thread/{thread_id}/",
     },
-
-    # =========================================
-    # B4K
-    # =========================================
 
     "b4k": {
 
@@ -243,57 +226,6 @@ def normalize_whitespace(text):
     ).strip()
 
 
-def extract_ids_from_soup(soup):
-
-    ids = []
-
-    links = soup.find_all(
-        "a",
-        href=True
-    )
-
-    for link in links:
-
-        href = link["href"]
-
-        match = re.search(
-            r"/[a-zA-Z0-9]+/thread/(\d+)",
-            href
-        )
-
-        if match:
-
-            tid = int(match.group(1))
-
-            if tid not in ids:
-
-                ids.append(tid)
-
-    return ids
-
-
-# =====================================================
-# URL BUILDER
-# =====================================================
-
-def build_thread_url(
-    archive_name,
-    board_name,
-    thread_id
-):
-
-    config = ARCHIVES[archive_name]
-
-    path = config["thread"].format(
-        board=board_name,
-        thread_id=thread_id
-    )
-
-    return (
-        config["base"] + path
-    )
-
-
 def build_page_url(
     archive_name,
     board_name,
@@ -318,8 +250,26 @@ def build_page_url(
     return config["base"] + path
 
 
+def build_thread_url(
+    archive_name,
+    board_name,
+    thread_id
+):
+
+    config = ARCHIVES[archive_name]
+
+    path = config["thread"].format(
+        board=board_name,
+        thread_id=thread_id
+    )
+
+    return (
+        config["base"] + path
+    )
+
+
 # =====================================================
-# FETCH PAGE IDS
+# PAGE FETCHING
 # =====================================================
 
 def fetch_page_ids(
@@ -328,13 +278,16 @@ def fetch_page_ids(
     page
 ):
 
-    try:
+    url = build_page_url(
+        archive_name,
+        board_name,
+        page
+    )
 
-        url = build_page_url(
-            archive_name,
-            board_name,
-            page
-        )
+    print(f"\nFETCHING PAGE: {page}")
+    print(url)
+
+    try:
 
         response = requests.get(
             url,
@@ -344,6 +297,11 @@ def fetch_page_ids(
 
         if response.status_code != 200:
 
+            print(
+                f"BAD STATUS: "
+                f"{response.status_code}"
+            )
+
             return []
 
         soup = BeautifulSoup(
@@ -351,32 +309,93 @@ def fetch_page_ids(
             "html.parser"
         )
 
-        ids = extract_ids_from_soup(
-            soup
+        ids = []
+
+        links = soup.find_all(
+            "a",
+            href=True
+        )
+
+        for link in links:
+
+            href = link["href"]
+
+            match = re.search(
+                r"/[a-zA-Z0-9]+/thread/(\d+)",
+                href
+            )
+
+            if match:
+
+                tid = int(
+                    match.group(1)
+                )
+
+                if tid not in ids:
+
+                    ids.append(tid)
+
+        print(
+            f"FOUND {len(ids)} THREAD IDS"
         )
 
         return ids
 
-    except Exception:
+    except Exception as e:
+
+        print(
+            f"FETCH ERROR: {e}"
+        )
 
         return []
 
 
 # =====================================================
-# BINARY SEARCH PAGE
+# SAFE PAGE ESTIMATION
+# =====================================================
+
+def estimate_start_page(
+    newest_id,
+    range_start
+):
+
+    estimated_page = max(
+        1,
+        min(
+            5000,
+            (
+                newest_id - range_start
+            ) // 1000
+        )
+    )
+
+    return int(estimated_page)
+
+
+# =====================================================
+# BINARY SEARCH
 # =====================================================
 
 def binary_search_start_page(
     archive_name,
     board_name,
     target_id,
-    newest_id,
-    max_page_guess=5000
+    newest_id
 ):
 
     low = 1
-    high = max_page_guess
-    best_page = 1
+
+    high = estimate_start_page(
+        newest_id,
+        target_id
+    )
+
+    best_page = low
+
+    print(
+        f"BINARY SEARCH RANGE: "
+        f"{low} -> {high}"
+    )
 
     while low <= high:
 
@@ -397,30 +416,42 @@ def binary_search_start_page(
         lowest = min(ids)
 
         print(
-            f"BINARY PAGE {mid}: "
+            f"PAGE {mid}: "
             f"{highest} -> {lowest}"
         )
 
-        # target newer than page
+        # newer than page
         if target_id > highest:
 
             high = mid - 1
+            best_page = high
 
-        # target older than page
+        # older than page
         elif target_id < lowest:
 
             low = mid + 1
+            best_page = low
 
         else:
 
             best_page = mid
             break
 
-    return max(1, best_page)
+    best_page = max(
+        1,
+        best_page
+    )
+
+    print(
+        f"START PAGE: "
+        f"{best_page}"
+    )
+
+    return best_page
 
 
 # =====================================================
-# SMART RANGE THREAD EXTRACTION
+# THREAD EXTRACTION
 # =====================================================
 
 def extract_thread_ids(
@@ -433,8 +464,6 @@ def extract_thread_ids(
     status_text=None
 ):
 
-    config = ARCHIVES[archive_name]
-
     collected = []
     seen = set()
 
@@ -442,13 +471,13 @@ def extract_thread_ids(
     empty_pages = 0
 
     # =========================================
-    # FETCH FIRST PAGE
+    # INITIAL PAGE
     # =========================================
 
     if status_text:
 
         status_text.caption(
-            "Fetching initial archive page..."
+            "Fetching initial page..."
         )
 
     first_page_ids = fetch_page_ids(
@@ -461,15 +490,17 @@ def extract_thread_ids(
 
         return []
 
-    newest_id = max(first_page_ids)
+    newest_id = max(
+        first_page_ids
+    )
 
     print(
-        f"NEWEST THREAD: "
+        f"NEWEST THREAD ID: "
         f"{newest_id}"
     )
 
     # =========================================
-    # RANGE VALIDATION
+    # RANGE FIX
     # =========================================
 
     if (
@@ -484,50 +515,36 @@ def extract_thread_ids(
                 range_start
             )
 
+        # =====================================
+        # AUTO LIMIT SAFETY
+        # =====================================
+
+        estimated_range_size = max(
+            1,
+            range_end - range_start
+        )
+
+        limit = min(
+            limit,
+            estimated_range_size
+        )
+
+        print(
+            f"AUTO-ADJUSTED LIMIT: "
+            f"{limit}"
+        )
+
     # =========================================
     # START PAGE
     # =========================================
 
     if range_start is not None:
 
-        if status_text:
-
-            status_text.caption(
-                "Finding approximate page..."
-            )
-
-        # =====================================
-        # SAFE INITIAL ESTIMATION
-        # =====================================
-
-        conservative_guess = max(
-            1,
-            min(
-                5000,
-                (
-                    newest_id - range_start
-                ) // 1000
-            )
-        )
-
-        # =====================================
-        # BINARY SEARCH
-        # =====================================
-
         page = binary_search_start_page(
             archive_name,
             board_name,
             range_start,
-            newest_id,
-            max_page_guess=max(
-                100,
-                conservative_guess
-            )
-        )
-
-        print(
-            f"STARTING NEAR PAGE: "
-            f"{page}"
+            newest_id
         )
 
     else:
@@ -538,7 +555,7 @@ def extract_thread_ids(
     # MAIN LOOP
     # =========================================
 
-    while len(collected) < limit:
+    while True:
 
         scanned_pages += 1
 
@@ -568,10 +585,6 @@ def extract_thread_ids(
                 f"Collected {len(collected)} threads"
             )
 
-        print(
-            f"\nSCANNING PAGE {page}"
-        )
-
         page_thread_ids = fetch_page_ids(
             archive_name,
             board_name,
@@ -579,7 +592,7 @@ def extract_thread_ids(
         )
 
         # =====================================
-        # EMPTY PAGE HANDLING
+        # EMPTY PAGE
         # =====================================
 
         if not page_thread_ids:
@@ -588,8 +601,8 @@ def extract_thread_ids(
 
             print(
                 f"EMPTY PAGE "
-                f"({empty_pages}/"
-                f"{MAX_EMPTY_PAGES})"
+                f"{empty_pages}/"
+                f"{MAX_EMPTY_PAGES}"
             )
 
             if empty_pages >= MAX_EMPTY_PAGES:
@@ -605,36 +618,49 @@ def extract_thread_ids(
 
         empty_pages = 0
 
-        highest = max(page_thread_ids)
-        lowest = min(page_thread_ids)
+        highest = max(
+            page_thread_ids
+        )
+
+        lowest = min(
+            page_thread_ids
+        )
 
         print(
             f"PAGE RANGE: "
             f"{highest} -> {lowest}"
         )
 
+        print(
+            f"SAMPLE IDS: "
+            f"{page_thread_ids[:5]}"
+        )
+
         # =====================================
-        # RANGE ALREADY PASSED
+        # HARD RANGE TERMINATION
         # =====================================
 
-        if (
-            range_start is not None
-            and all(
+        if range_start is not None:
+
+            below_count = sum(
                 tid < range_start
                 for tid in page_thread_ids
             )
-        ):
 
-            print(
-                "PASSED LOWER RANGE"
-            )
+            if below_count >= (
+                len(page_thread_ids) * 0.9
+            ):
 
-            break
+                print(
+                    "ARCHIVE PASSED TARGET RANGE"
+                )
+
+                break
 
         found_any = False
 
         # =====================================
-        # PARSE THREAD IDS
+        # PROCESS IDS
         # =====================================
 
         for numeric_thread_id in page_thread_ids:
@@ -664,7 +690,9 @@ def extract_thread_ids(
 
             seen.add(thread_id)
 
-            collected.append(thread_id)
+            collected.append(
+                thread_id
+            )
 
             found_any = True
 
@@ -673,11 +701,36 @@ def extract_thread_ids(
                 f"{thread_id}"
             )
 
+            # =================================
+            # LIMIT REACHED
+            # =================================
+
             if len(collected) >= limit:
-                break
+
+                print(
+                    "LIMIT REACHED"
+                )
+
+                return collected[:limit]
 
         # =====================================
-        # SMART PAGE SKIP
+        # NO MORE MATCHES
+        # =====================================
+
+        if (
+            range_start is not None
+            and lowest < range_start
+            and not found_any
+        ):
+
+            print(
+                "NO MORE POSSIBLE MATCHES"
+            )
+
+            break
+
+        # =====================================
+        # SMART SKIPPING
         # =====================================
 
         if (
@@ -685,7 +738,7 @@ def extract_thread_ids(
             and range_end is not None
         ):
 
-            # page entirely newer than target
+            # page fully newer
             if all(
                 tid > range_end
                 for tid in page_thread_ids
@@ -701,19 +754,18 @@ def extract_thread_ids(
                     )
                 )
 
-                page += jump
-
                 print(
-                    f"SKIPPING FORWARD "
+                    f"SKIPPING "
                     f"{jump} PAGES"
                 )
 
+                page += jump
                 continue
 
         if not found_any:
 
             print(
-                "NO MATCHING THREADS"
+                "NO MATCHES ON PAGE"
             )
 
         page += 1
@@ -1063,10 +1115,6 @@ if st.button("Start Crawl"):
 
     start_time = datetime.now()
 
-    # =========================================
-    # THREAD ID LOADING UI
-    # =========================================
-
     collecting_placeholder = st.empty()
 
     collecting_placeholder.info(
@@ -1078,7 +1126,7 @@ if st.button("Start Crawl"):
     loading_status = st.empty()
 
     # =========================================
-    # EXTRACT THREAD IDS
+    # EXTRACT IDS
     # =========================================
 
     thread_ids = extract_thread_ids(
@@ -1123,7 +1171,7 @@ if st.button("Start Crawl"):
         st.stop()
 
     # =========================================
-    # SCRAPING POSTS
+    # SCRAPE THREADS
     # =========================================
 
     scraping_bar = st.progress(0)
@@ -1283,7 +1331,7 @@ if st.button("Start Crawl"):
     )
 
     # =========================================
-    # EXPORT FILES
+    # EXPORTS
     # =========================================
 
     export_files = {}
