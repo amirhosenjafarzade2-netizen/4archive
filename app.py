@@ -418,10 +418,14 @@ def extract_thread_ids(
     # RANGE MODE
     # =========================================
 
+    # Archive layout: page 1 = newest threads,
+    # higher page numbers = older threads.
+    # Binary search finds the deepest (oldest)
+    # page that still overlaps the target range.
+
     low = 1
     high = MAX_PAGES
-
-    best_page = 1
+    best_page = None
 
     # =========================================
     # BINARY SEARCH
@@ -438,7 +442,7 @@ def extract_thread_ids(
         )
 
         if not ids:
-
+            # Empty page — shrink search space
             high = mid - 1
             continue
 
@@ -450,27 +454,49 @@ def extract_thread_ids(
             f"{highest} -> {lowest}"
         )
 
-        if highest < range_start:
-
-            high = mid - 1
-
-        elif lowest > range_end:
-
+        if lowest > range_end:
+            # Page is entirely newer than range
+            # → go deeper (higher page = older)
             low = mid + 1
 
-        else:
+        elif highest < range_start:
+            # Page is entirely older than range
+            # → go shallower (lower page = newer)
+            high = mid - 1
 
+        else:
+            # Overlap — record and keep pushing
+            # deeper to find earliest overlap page
             best_page = mid
-            break
+            low = mid + 1
+
+    if best_page is None:
+
+        if status_text:
+            status_text.caption(
+                "Could not locate thread ID "
+                "range in archive."
+            )
+
+        return []
+
+    print(
+        f"BINARY SEARCH DONE => "
+        f"best_page={best_page}"
+    )
 
     # =========================================
     # LOCAL SCAN
+    # Start a few pages before best_page to
+    # catch any threads that spilled over due
+    # to page boundary variance.
     # =========================================
 
-    page = max(1, best_page - 3)
+    page = max(1, best_page - 5)
 
     scanned_pages = 0
     empty_pages = 0
+    consecutive_out_of_range = 0
 
     while len(collected) < limit:
 
@@ -505,20 +531,29 @@ def extract_thread_ids(
             f"{highest} -> {lowest}"
         )
 
-        # =====================================
-        # STOP CONDITIONS
-        # =====================================
-
         if highest < range_start:
-            break
+            # Page is entirely older than range.
+            # Allow a few more pages in case of
+            # ordering anomalies, then stop.
+            consecutive_out_of_range += 1
 
-        if lowest > range_end:
+            if consecutive_out_of_range >= 3:
+                break
 
             page += 1
             continue
 
+        else:
+            consecutive_out_of_range = 0
+
+        if lowest > range_end:
+            # Page is entirely newer than range
+            # → keep advancing toward older pages
+            page += 1
+            continue
+
         # =====================================
-        # COLLECT THREADS
+        # COLLECT THREADS IN RANGE
         # =====================================
 
         for tid in ids:
@@ -949,7 +984,9 @@ if st.button("Start Crawl"):
     if not thread_ids:
 
         st.error(
-            "No thread IDs found."
+            "No thread IDs found. "
+            "The specified ID range may not "
+            "exist in this archive."
         )
 
         st.stop()
