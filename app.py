@@ -270,7 +270,9 @@ def extract_thread_ids(
     board_name,
     limit,
     range_start=None,
-    range_end=None
+    range_end=None,
+    progress_bar=None,
+    status_text=None
 ):
 
     config = ARCHIVES[archive_name]
@@ -281,6 +283,12 @@ def extract_thread_ids(
     # =========================================
     # FETCH FIRST PAGE
     # =========================================
+
+    if status_text:
+
+        status_text.caption(
+            "Fetching initial archive page..."
+        )
 
     first_page_url = (
         config["base"]
@@ -386,11 +394,34 @@ def extract_thread_ids(
 
         page = 1
 
+    scanned_pages = 0
+
     # =========================================
     # MAIN LOOP
     # =========================================
 
     while len(collected) < limit:
+
+        scanned_pages += 1
+
+        if progress_bar:
+
+            fake_progress = min(
+                95,
+                scanned_pages * 3
+            )
+
+            progress_bar.progress(
+                fake_progress
+            )
+
+        if status_text:
+
+            status_text.caption(
+                f"Scanning page {page} | "
+                f"Collected {len(collected)} "
+                f"threads"
+            )
 
         # -------------------------------------
         # BUILD PAGE URL
@@ -531,7 +562,6 @@ def extract_thread_ids(
                     f"{highest} -> {lowest}"
                 )
 
-                # If page still newer than target
                 if lowest > range_end:
 
                     jump = max(
@@ -595,10 +625,6 @@ def parse_thread(
 
     candidates = []
 
-    # =========================================
-    # DESUARCHIVE / B4K
-    # =========================================
-
     candidates.extend(
         soup.select(".post_data")
     )
@@ -607,10 +633,6 @@ def parse_thread(
         soup.select(".text")
     )
 
-    # =========================================
-    # WAROSU / 4PLEBS
-    # =========================================
-
     candidates.extend(
         soup.find_all("blockquote")
     )
@@ -618,10 +640,6 @@ def parse_thread(
     candidates.extend(
         soup.find_all("article")
     )
-
-    # =========================================
-    # THREAD SUBJECT
-    # =========================================
 
     thread_subject = ""
 
@@ -647,10 +665,6 @@ def parse_thread(
 
             if thread_subject:
                 break
-
-    # =========================================
-    # POSTS
-    # =========================================
 
     for idx, block in enumerate(candidates):
 
@@ -744,11 +758,6 @@ async def fetch_thread(
 
                 if response.status != 200:
 
-                    print(
-                        f"BAD THREAD STATUS: "
-                        f"{response.status}"
-                    )
-
                     return []
 
                 html = await response.text()
@@ -760,19 +769,9 @@ async def fetch_thread(
                     archive_name
                 )
 
-                print(
-                    f"THREAD {thread_id}: "
-                    f"{len(parsed)} posts"
-                )
-
                 return parsed
 
-        except Exception as e:
-
-            print(
-                "THREAD ERROR:",
-                e
-            )
+        except Exception:
 
             return []
 
@@ -941,9 +940,23 @@ if st.button("Start Crawl"):
 
     start_time = datetime.now()
 
-    st.info(
+    # =========================================
+    # THREAD ID LOADING UI
+    # =========================================
+
+    collecting_placeholder = st.empty()
+
+    collecting_placeholder.info(
         "Collecting thread IDs..."
     )
+
+    loading_bar = st.progress(0)
+
+    loading_status = st.empty()
+
+    # =========================================
+    # EXTRACT THREAD IDS
+    # =========================================
 
     thread_ids = extract_thread_ids(
 
@@ -961,10 +974,19 @@ if st.button("Start Crawl"):
             int(range_end)
             if use_range_scrape
             else None
-        )
+        ),
+
+        progress_bar=loading_bar,
+        status_text=loading_status
     )
 
-    st.success(
+    loading_bar.progress(100)
+
+    loading_status.caption(
+        "Thread collection complete."
+    )
+
+    collecting_placeholder.success(
         f"Collected "
         f"{len(thread_ids)} thread IDs"
     )
@@ -977,7 +999,17 @@ if st.button("Start Crawl"):
 
         st.stop()
 
-    progress = st.progress(0)
+    # =========================================
+    # SCRAPING POSTS
+    # =========================================
+
+    scraping_bar = st.progress(0)
+
+    scraping_status = st.empty()
+
+    scraping_status.caption(
+        "Scraping thread contents..."
+    )
 
     posts = asyncio.run(
 
@@ -991,7 +1023,11 @@ if st.button("Start Crawl"):
 
     )
 
-    progress.progress(100)
+    scraping_bar.progress(100)
+
+    scraping_status.caption(
+        "Thread scraping complete."
+    )
 
     # =========================================
     # THREAD FILTER
