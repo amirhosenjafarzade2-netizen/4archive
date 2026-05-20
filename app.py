@@ -1,4 +1,3 @@
-```python
 import asyncio
 import io
 import json
@@ -1167,4 +1166,3 @@ st.divider()
 st.caption(
     "Research / educational use only."
 )
-```
