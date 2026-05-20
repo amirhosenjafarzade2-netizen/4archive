@@ -145,10 +145,6 @@ with st.sidebar:
         value=100
     )
 
-    # =========================================
-    # PAGE RANGE SCRAPING
-    # =========================================
-
     use_page_range = st.checkbox(
         "Enable page-range scraping"
     )
@@ -268,13 +264,14 @@ def build_thread_url(
 
 
 # =====================================================
-# PAGE FETCHING
+# FILTERABLE PAGE SCAN
 # =====================================================
 
 def fetch_page_ids(
     archive_name,
     board_name,
-    page
+    page,
+    thread_keyword_filter=None
 ):
 
     url = build_page_url(
@@ -308,34 +305,84 @@ def fetch_page_ids(
             "html.parser"
         )
 
-        ids = []
+        keyword = ""
 
-        links = soup.find_all(
-            "a",
-            href=True
-        )
+        if thread_keyword_filter:
 
-        for link in links:
-
-            href = link["href"]
-
-            match = re.search(
-                r"/[a-zA-Z0-9]+/thread/(\d+)",
-                href
+            keyword = (
+                thread_keyword_filter
+                .lower()
+                .strip()
             )
 
-            if match:
+        ids = []
+        seen = set()
 
-                tid = int(
+        # =====================================
+        # THREAD BLOCKS
+        # =====================================
+
+        thread_blocks = soup.find_all(
+            [
+                "article",
+                "div"
+            ]
+        )
+
+        for block in thread_blocks:
+
+            block_text = normalize_whitespace(
+                block.get_text(
+                    " ",
+                    strip=True
+                )
+            ).lower()
+
+            links = block.find_all(
+                "a",
+                href=True
+            )
+
+            for link in links:
+
+                href = link["href"]
+
+                match = re.search(
+                    r"/[a-zA-Z0-9]+/thread/(\d+)",
+                    href
+                )
+
+                if not match:
+                    continue
+
+                thread_id = str(
                     match.group(1)
                 )
 
-                if tid not in ids:
+                if thread_id in seen:
+                    continue
 
-                    ids.append(tid)
+                # =================================
+                # KEYWORD FILTER
+                # =================================
+
+                if keyword:
+
+                    if keyword not in block_text:
+                        continue
+
+                seen.add(thread_id)
+
+                ids.append(thread_id)
+
+                print(
+                    f"MATCHED THREAD: "
+                    f"{thread_id}"
+                )
 
         print(
-            f"FOUND {len(ids)} THREAD IDS"
+            f"FOUND {len(ids)} "
+            f"MATCHING THREAD IDS"
         )
 
         return ids
@@ -357,6 +404,7 @@ def extract_thread_ids(
     archive_name,
     board_name,
     limit,
+    thread_keyword_filter=None,
     start_page=1,
     pages_to_scan=None,
     progress_bar=None,
@@ -414,7 +462,8 @@ def extract_thread_ids(
         page_thread_ids = fetch_page_ids(
             archive_name,
             board_name,
-            page
+            page,
+            thread_keyword_filter
         )
 
         if not page_thread_ids:
@@ -427,14 +476,10 @@ def extract_thread_ids(
 
         print(
             f"PAGE {page} -> "
-            f"{len(page_thread_ids)} THREADS"
+            f"{len(page_thread_ids)} MATCHES"
         )
 
-        for numeric_thread_id in page_thread_ids:
-
-            thread_id = str(
-                numeric_thread_id
-            )
+        for thread_id in page_thread_ids:
 
             if thread_id in seen:
                 continue
@@ -443,11 +488,6 @@ def extract_thread_ids(
 
             collected.append(
                 thread_id
-            )
-
-            print(
-                f"FOUND THREAD: "
-                f"{thread_id}"
             )
 
             if len(collected) >= limit:
@@ -462,7 +502,7 @@ def extract_thread_ids(
 
 
 # =====================================================
-# THREAD FILTER HELPERS
+# POST EXTRACTION
 # =====================================================
 
 def extract_thread_subject(soup):
@@ -514,7 +554,7 @@ def extract_post_elements(soup):
 
 def extract_post_text(post):
 
-    text_selectors = [
+    selectors = [
         "blockquote",
         ".text",
         ".post_message",
@@ -522,7 +562,7 @@ def extract_post_text(post):
         ".message"
     ]
 
-    for selector in text_selectors:
+    for selector in selectors:
 
         el = post.select_one(selector)
 
@@ -538,14 +578,12 @@ def extract_post_text(post):
             if text:
                 return text
 
-    text = normalize_whitespace(
+    return normalize_whitespace(
         post.get_text(
             " ",
             strip=True
         )
     )
-
-    return text
 
 
 # =====================================================
@@ -564,8 +602,6 @@ def parse_thread(
         "html.parser"
     )
 
-    posts = []
-
     thread_subject = extract_thread_subject(
         soup
     )
@@ -574,9 +610,7 @@ def parse_thread(
         soup
     )
 
-    if not post_elements:
-
-        return []
+    posts = []
 
     for idx, post in enumerate(post_elements):
 
@@ -642,8 +676,7 @@ async def fetch_thread(
     archive_name,
     board_name,
     thread_id,
-    timeout_seconds,
-    thread_keyword_filter=None
+    timeout_seconds
 ):
 
     url = build_thread_url(
@@ -663,75 +696,9 @@ async def fetch_thread(
             ) as response:
 
                 if response.status != 200:
-
                     return []
 
                 html = await response.text()
-
-                # =====================================
-                # EARLY FILTER
-                # =====================================
-
-                if thread_keyword_filter:
-
-                    soup = BeautifulSoup(
-                        html,
-                        "html.parser"
-                    )
-
-                    keyword = (
-                        thread_keyword_filter
-                        .lower()
-                        .strip()
-                    )
-
-                    thread_subject = (
-                        extract_thread_subject(
-                            soup
-                        ).lower()
-                    )
-
-                    post_elements = (
-                        extract_post_elements(
-                            soup
-                        )
-                    )
-
-                    op_text = ""
-
-                    if post_elements:
-
-                        op_text = (
-                            extract_post_text(
-                                post_elements[0]
-                            ).lower()
-                        )
-
-                    subject_match = (
-                        keyword in thread_subject
-                    )
-
-                    op_match = (
-                        keyword in op_text
-                    )
-
-                    # SKIP THREAD COMPLETELY
-                    if not (
-                        subject_match
-                        or
-                        op_match
-                    ):
-
-                        print(
-                            f"SKIPPED THREAD "
-                            f"{thread_id}"
-                        )
-
-                        return []
-
-                # =====================================
-                # PARSE ONLY MATCHING THREADS
-                # =====================================
 
                 parsed = parse_thread(
                     html,
@@ -761,8 +728,7 @@ async def scrape_threads(
     board_name,
     thread_ids,
     concurrency,
-    timeout_seconds,
-    thread_keyword_filter=None
+    timeout_seconds
 ):
 
     semaphore = asyncio.Semaphore(
@@ -787,8 +753,7 @@ async def scrape_threads(
                 archive_name,
                 board_name,
                 thread_id,
-                timeout_seconds,
-                thread_keyword_filter
+                timeout_seconds
             )
 
             for thread_id in thread_ids
@@ -921,7 +886,7 @@ if st.button("Start Crawl"):
     collecting_placeholder = st.empty()
 
     collecting_placeholder.info(
-        "Collecting thread IDs..."
+        "Collecting matching thread IDs..."
     )
 
     loading_bar = st.progress(0)
@@ -929,7 +894,7 @@ if st.button("Start Crawl"):
     loading_status = st.empty()
 
     # =========================================
-    # EXTRACT IDS
+    # ONLY MATCHING THREAD IDS
     # =========================================
 
     thread_ids = extract_thread_ids(
@@ -937,6 +902,9 @@ if st.button("Start Crawl"):
         archive_source,
         board,
         thread_limit,
+
+        thread_keyword_filter=
+            thread_keyword_filter,
 
         start_page=(
             int(start_page)
@@ -962,19 +930,20 @@ if st.button("Start Crawl"):
 
     collecting_placeholder.success(
         f"Collected "
-        f"{len(thread_ids)} thread IDs"
+        f"{len(thread_ids)} "
+        f"matching thread IDs"
     )
 
     if not thread_ids:
 
         st.error(
-            "No thread IDs found."
+            "No matching thread IDs found."
         )
 
         st.stop()
 
     # =========================================
-    # SCRAPE THREADS
+    # SCRAPE ONLY MATCHING THREADS
     # =========================================
 
     scraping_bar = st.progress(0)
@@ -992,8 +961,7 @@ if st.button("Start Crawl"):
             board,
             thread_ids,
             concurrency,
-            timeout_seconds,
-            thread_keyword_filter
+            timeout_seconds
         )
 
     )
