@@ -1,3 +1,4 @@
+```python
 import asyncio
 import io
 import json
@@ -366,10 +367,6 @@ def extract_thread_ids(
     collected = []
     seen = set()
 
-    # =====================================
-    # PAGE RANGE
-    # =====================================
-
     if pages_to_scan is None:
 
         end_page = MAX_SCAN_PAGES
@@ -390,20 +387,12 @@ def extract_thread_ids(
 
     scanned = 0
 
-    # =====================================
-    # MAIN LOOP
-    # =====================================
-
     for page in range(
         start_page,
         end_page + 1
     ):
 
         scanned += 1
-
-        # =================================
-        # UI
-        # =================================
 
         if progress_bar:
 
@@ -423,10 +412,6 @@ def extract_thread_ids(
                 f"Collected {len(collected)} threads"
             )
 
-        # =================================
-        # FETCH IDS
-        # =================================
-
         page_thread_ids = fetch_page_ids(
             archive_name,
             board_name,
@@ -445,10 +430,6 @@ def extract_thread_ids(
             f"PAGE {page} -> "
             f"{len(page_thread_ids)} THREADS"
         )
-
-        # =================================
-        # PROCESS IDS
-        # =================================
 
         for numeric_thread_id in page_thread_ids:
 
@@ -470,10 +451,6 @@ def extract_thread_ids(
                 f"{thread_id}"
             )
 
-            # =============================
-            # LIMIT
-            # =============================
-
             if len(collected) >= limit:
 
                 print(
@@ -483,6 +460,93 @@ def extract_thread_ids(
                 return collected[:limit]
 
     return collected[:limit]
+
+
+# =====================================================
+# THREAD FILTER HELPERS
+# =====================================================
+
+def extract_thread_subject(soup):
+
+    subject_selectors = [
+        ".subject",
+        ".post_title",
+        ".title",
+        ".thread_title"
+    ]
+
+    for selector in subject_selectors:
+
+        el = soup.select_one(selector)
+
+        if el:
+
+            text = normalize_whitespace(
+                el.get_text(
+                    " ",
+                    strip=True
+                )
+            )
+
+            if text:
+                return text
+
+    return ""
+
+
+def extract_post_elements(soup):
+
+    selectors = [
+        ".post",
+        ".thread-post",
+        "article.post",
+        ".postContainer"
+    ]
+
+    for selector in selectors:
+
+        posts = soup.select(selector)
+
+        if posts:
+            return posts
+
+    return []
+
+
+def extract_post_text(post):
+
+    text_selectors = [
+        "blockquote",
+        ".text",
+        ".post_message",
+        ".body",
+        ".message"
+    ]
+
+    for selector in text_selectors:
+
+        el = post.select_one(selector)
+
+        if el:
+
+            text = normalize_whitespace(
+                el.get_text(
+                    " ",
+                    strip=True
+                )
+            )
+
+            if text:
+                return text
+
+    text = normalize_whitespace(
+        post.get_text(
+            " ",
+            strip=True
+        )
+    )
+
+    return text
 
 
 # =====================================================
@@ -503,71 +567,31 @@ def parse_thread(
 
     posts = []
 
-    seen = set()
-
-    candidates = []
-
-    candidates.extend(
-        soup.select(".post_data")
+    thread_subject = extract_thread_subject(
+        soup
     )
 
-    candidates.extend(
-        soup.select(".text")
+    post_elements = extract_post_elements(
+        soup
     )
 
-    candidates.extend(
-        soup.find_all("blockquote")
-    )
+    if not post_elements:
 
-    candidates.extend(
-        soup.find_all("article")
-    )
+        return []
 
-    thread_subject = ""
+    for idx, post in enumerate(post_elements):
 
-    subject_selectors = [
-        ".subject",
-        ".post_title",
-        ".title",
-        ".thread_title"
-    ]
-
-    for selector in subject_selectors:
-
-        el = soup.select_one(selector)
-
-        if el:
-
-            thread_subject = normalize_whitespace(
-                el.get_text(
-                    " ",
-                    strip=True
-                )
-            )
-
-            if thread_subject:
-                break
-
-    for idx, block in enumerate(candidates):
-
-        text = normalize_whitespace(
-            block.get_text(
-                " ",
-                strip=True
-            )
+        content = extract_post_text(
+            post
         )
 
-        if len(text) < 20:
+        if len(content) < 5:
             continue
 
-        key = text[:500]
-
-        if key in seen:
-            continue
-
-        seen.add(key)
-
-        is_op = idx == 0
+        post_id = (
+            post.get("id")
+            or f"{thread_id}_{idx}"
+        )
 
         posts.append({
 
@@ -581,10 +605,10 @@ def parse_thread(
                 thread_id,
 
             "post_id":
-                f"{thread_id}_{idx}",
+                str(post_id),
 
             "is_op":
-                is_op,
+                idx == 0,
 
             "thread_subject":
                 thread_subject,
@@ -596,7 +620,7 @@ def parse_thread(
                 "",
 
             "content":
-                text,
+                content,
 
             "url":
                 build_thread_url(
@@ -619,7 +643,8 @@ async def fetch_thread(
     archive_name,
     board_name,
     thread_id,
-    timeout_seconds
+    timeout_seconds,
+    thread_keyword_filter=None
 ):
 
     url = build_thread_url(
@@ -643,6 +668,71 @@ async def fetch_thread(
                     return []
 
                 html = await response.text()
+
+                # =====================================
+                # EARLY FILTER
+                # =====================================
+
+                if thread_keyword_filter:
+
+                    soup = BeautifulSoup(
+                        html,
+                        "html.parser"
+                    )
+
+                    keyword = (
+                        thread_keyword_filter
+                        .lower()
+                        .strip()
+                    )
+
+                    thread_subject = (
+                        extract_thread_subject(
+                            soup
+                        ).lower()
+                    )
+
+                    post_elements = (
+                        extract_post_elements(
+                            soup
+                        )
+                    )
+
+                    op_text = ""
+
+                    if post_elements:
+
+                        op_text = (
+                            extract_post_text(
+                                post_elements[0]
+                            ).lower()
+                        )
+
+                    subject_match = (
+                        keyword in thread_subject
+                    )
+
+                    op_match = (
+                        keyword in op_text
+                    )
+
+                    # SKIP THREAD COMPLETELY
+                    if not (
+                        subject_match
+                        or
+                        op_match
+                    ):
+
+                        print(
+                            f"SKIPPED THREAD "
+                            f"{thread_id}"
+                        )
+
+                        return []
+
+                # =====================================
+                # PARSE ONLY MATCHING THREADS
+                # =====================================
 
                 parsed = parse_thread(
                     html,
@@ -672,7 +762,8 @@ async def scrape_threads(
     board_name,
     thread_ids,
     concurrency,
-    timeout_seconds
+    timeout_seconds,
+    thread_keyword_filter=None
 ):
 
     semaphore = asyncio.Semaphore(
@@ -697,7 +788,8 @@ async def scrape_threads(
                 archive_name,
                 board_name,
                 thread_id,
-                timeout_seconds
+                timeout_seconds,
+                thread_keyword_filter
             )
 
             for thread_id in thread_ids
@@ -891,7 +983,7 @@ if st.button("Start Crawl"):
     scraping_status = st.empty()
 
     scraping_status.caption(
-        "Scraping thread contents..."
+        "Scraping matching threads..."
     )
 
     posts = asyncio.run(
@@ -901,7 +993,8 @@ if st.button("Start Crawl"):
             board,
             thread_ids,
             concurrency,
-            timeout_seconds
+            timeout_seconds,
+            thread_keyword_filter
         )
 
     )
@@ -913,59 +1006,22 @@ if st.button("Start Crawl"):
     )
 
     # =========================================
-    # THREAD FILTER
-    # =========================================
-
-    if thread_keyword_filter:
-
-        keyword = (
-            thread_keyword_filter.lower()
-        )
-
-        matching_thread_ids = set()
-
-        for p in posts:
-
-            subject_match = (
-                keyword in
-                p.get(
-                    "thread_subject",
-                    ""
-                ).lower()
-            )
-
-            op_match = (
-                p["is_op"]
-                and
-                keyword in
-                p["content"].lower()
-            )
-
-            if subject_match or op_match:
-
-                matching_thread_ids.add(
-                    p["thread_id"]
-                )
-
-        posts = [
-
-            p for p in posts
-
-            if p["thread_id"]
-            in matching_thread_ids
-        ]
-
-    # =========================================
     # POST FILTER
     # =========================================
 
     if post_keyword_filter:
 
+        keyword = (
+            post_keyword_filter
+            .lower()
+            .strip()
+        )
+
         posts = [
 
             p for p in posts
 
-            if post_keyword_filter.lower()
+            if keyword
             in p["content"].lower()
         ]
 
@@ -1111,3 +1167,4 @@ st.divider()
 st.caption(
     "Research / educational use only."
 )
+```
