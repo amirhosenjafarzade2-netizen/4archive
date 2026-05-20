@@ -1,6 +1,7 @@
 import asyncio
 import io
 import json
+import math
 import re
 import sqlite3
 import zipfile
@@ -29,12 +30,19 @@ HEADERS = {
 DATA_DIR = Path("exports")
 DATA_DIR.mkdir(exist_ok=True)
 
+MAX_EMPTY_PAGES = 5
+MAX_SCAN_PAGES = 100000
+
 
 # =====================================================
 # ARCHIVES
 # =====================================================
 
 ARCHIVES = {
+
+    # =========================================
+    # WAROSU
+    # =========================================
 
     "warosu": {
 
@@ -51,6 +59,10 @@ ARCHIVES = {
             "/{board}/thread/{thread_id}",
     },
 
+    # =========================================
+    # 4PLEBS
+    # =========================================
+
     "4plebs": {
 
         "base":
@@ -66,6 +78,10 @@ ARCHIVES = {
             "/{board}/thread/{thread_id}/",
     },
 
+    # =========================================
+    # DESUARCHIVE
+    # =========================================
+
     "desuarchive": {
 
         "base":
@@ -80,6 +96,10 @@ ARCHIVES = {
         "thread":
             "/thread/{thread_id}/",
     },
+
+    # =========================================
+    # B4K
+    # =========================================
 
     "b4k": {
 
@@ -223,6 +243,35 @@ def normalize_whitespace(text):
     ).strip()
 
 
+def extract_ids_from_soup(soup):
+
+    ids = []
+
+    links = soup.find_all(
+        "a",
+        href=True
+    )
+
+    for link in links:
+
+        href = link["href"]
+
+        match = re.search(
+            r"/[a-zA-Z0-9]+/thread/(\d+)",
+            href
+        )
+
+        if match:
+
+            tid = int(match.group(1))
+
+            if tid not in ids:
+
+                ids.append(tid)
+
+    return ids
+
+
 # =====================================================
 # URL BUILDER
 # =====================================================
@@ -245,11 +294,7 @@ def build_thread_url(
     )
 
 
-# =====================================================
-# PAGE FETCHER
-# =====================================================
-
-def fetch_archive_page(
+def build_page_url(
     archive_name,
     board_name,
     page
@@ -257,22 +302,39 @@ def fetch_archive_page(
 
     config = ARCHIVES[archive_name]
 
+    if page == 1:
+
+        path = config["page1"].format(
+            board=board_name
+        )
+
+    else:
+
+        path = config["pageN"].format(
+            board=board_name,
+            page=page
+        )
+
+    return config["base"] + path
+
+
+# =====================================================
+# FETCH PAGE IDS
+# =====================================================
+
+def fetch_page_ids(
+    archive_name,
+    board_name,
+    page
+):
+
     try:
 
-        if page <= 1:
-
-            path = config["page1"].format(
-                board=board_name
-            )
-
-        else:
-
-            path = config["pageN"].format(
-                board=board_name,
-                page=page
-            )
-
-        url = config["base"] + path
+        url = build_page_url(
+            archive_name,
+            board_name,
+            page
+        )
 
         response = requests.get(
             url,
@@ -281,6 +343,7 @@ def fetch_archive_page(
         )
 
         if response.status_code != 200:
+
             return []
 
         soup = BeautifulSoup(
@@ -288,43 +351,76 @@ def fetch_archive_page(
             "html.parser"
         )
 
-        ids = []
-
-        links = soup.find_all(
-            "a",
-            href=True
+        ids = extract_ids_from_soup(
+            soup
         )
-
-        for link in links:
-
-            href = link["href"]
-
-            match = re.search(
-                r"/[a-zA-Z0-9]+/thread/(\d+)",
-                href
-            )
-
-            if match:
-
-                tid = int(match.group(1))
-
-                if tid not in ids:
-                    ids.append(tid)
 
         return ids
 
-    except Exception as e:
-
-        print(
-            "PAGE FETCH ERROR:",
-            e
-        )
+    except Exception:
 
         return []
 
 
 # =====================================================
-# THREAD EXTRACTION
+# BINARY SEARCH PAGE
+# =====================================================
+
+def binary_search_start_page(
+    archive_name,
+    board_name,
+    target_id,
+    newest_id,
+    max_page_guess=5000
+):
+
+    low = 1
+    high = max_page_guess
+    best_page = 1
+
+    while low <= high:
+
+        mid = (low + high) // 2
+
+        ids = fetch_page_ids(
+            archive_name,
+            board_name,
+            mid
+        )
+
+        if not ids:
+
+            high = mid - 1
+            continue
+
+        highest = max(ids)
+        lowest = min(ids)
+
+        print(
+            f"BINARY PAGE {mid}: "
+            f"{highest} -> {lowest}"
+        )
+
+        # target newer than page
+        if target_id > highest:
+
+            high = mid - 1
+
+        # target older than page
+        elif target_id < lowest:
+
+            low = mid + 1
+
+        else:
+
+            best_page = mid
+            break
+
+    return max(1, best_page)
+
+
+# =====================================================
+# SMART RANGE THREAD EXTRACTION
 # =====================================================
 
 def extract_thread_ids(
@@ -337,267 +433,287 @@ def extract_thread_ids(
     status_text=None
 ):
 
+    config = ARCHIVES[archive_name]
+
     collected = []
     seen = set()
 
-    MAX_PAGES = 100000
-    EMPTY_PAGE_LIMIT = 25
+    scanned_pages = 0
+    empty_pages = 0
 
     # =========================================
-    # NORMAL MODE
+    # FETCH FIRST PAGE
     # =========================================
 
-    if range_start is None or range_end is None:
+    if status_text:
 
-        page = 1
-        empty_pages = 0
-
-        while len(collected) < limit:
-
-            ids = fetch_archive_page(
-                archive_name,
-                board_name,
-                page
-            )
-
-            if not ids:
-
-                empty_pages += 1
-
-                if empty_pages >= EMPTY_PAGE_LIMIT:
-                    break
-
-                page += 1
-                continue
-
-            empty_pages = 0
-
-            for tid in ids:
-
-                if tid in seen:
-                    continue
-
-                seen.add(tid)
-
-                collected.append(
-                    str(tid)
-                )
-
-                if len(collected) >= limit:
-                    break
-
-            if progress_bar:
-
-                progress = min(
-                    95,
-                    int(
-                        (
-                            len(collected)
-                            / limit
-                        ) * 100
-                    )
-                )
-
-                progress_bar.progress(
-                    progress
-                )
-
-            if status_text:
-
-                status_text.caption(
-                    f"Scanning page {page} | "
-                    f"Collected "
-                    f"{len(collected)} threads"
-                )
-
-            page += 1
-
-        return collected[:limit]
-
-    # =========================================
-    # RANGE MODE
-    # =========================================
-
-    # Archive layout: page 1 = newest threads,
-    # higher page numbers = older threads.
-    # Binary search finds the deepest (oldest)
-    # page that still overlaps the target range.
-
-    low = 1
-    high = MAX_PAGES
-    best_page = None
-
-    # =========================================
-    # BINARY SEARCH
-    # =========================================
-
-    while low <= high:
-
-        mid = (low + high) // 2
-
-        ids = fetch_archive_page(
-            archive_name,
-            board_name,
-            mid
+        status_text.caption(
+            "Fetching initial archive page..."
         )
 
-        if not ids:
-            # Empty page — shrink search space
-            high = mid - 1
-            continue
+    first_page_ids = fetch_page_ids(
+        archive_name,
+        board_name,
+        1
+    )
 
-        highest = max(ids)
-        lowest = min(ids)
-
-        print(
-            f"PAGE {mid} => "
-            f"{highest} -> {lowest}"
-        )
-
-        if lowest > range_end:
-            # Page is entirely newer than range
-            # → go deeper (higher page = older)
-            low = mid + 1
-
-        elif highest < range_start:
-            # Page is entirely older than range
-            # → go shallower (lower page = newer)
-            high = mid - 1
-
-        else:
-            # Overlap — record and keep pushing
-            # deeper to find earliest overlap page
-            best_page = mid
-            low = mid + 1
-
-    if best_page is None:
-
-        if status_text:
-            status_text.caption(
-                "Could not locate thread ID "
-                "range in archive."
-            )
+    if not first_page_ids:
 
         return []
 
+    newest_id = max(first_page_ids)
+
     print(
-        f"BINARY SEARCH DONE => "
-        f"best_page={best_page}"
+        f"NEWEST THREAD: "
+        f"{newest_id}"
     )
 
     # =========================================
-    # LOCAL SCAN
-    # Start a few pages before best_page to
-    # catch any threads that spilled over due
-    # to page boundary variance.
+    # RANGE VALIDATION
     # =========================================
 
-    page = max(1, best_page - 5)
+    if (
+        range_start is not None
+        and range_end is not None
+    ):
 
-    scanned_pages = 0
-    empty_pages = 0
-    consecutive_out_of_range = 0
+        if range_start > range_end:
+
+            range_start, range_end = (
+                range_end,
+                range_start
+            )
+
+    # =========================================
+    # START PAGE
+    # =========================================
+
+    if range_start is not None:
+
+        if status_text:
+
+            status_text.caption(
+                "Finding approximate page..."
+            )
+
+        # =====================================
+        # SAFE INITIAL ESTIMATION
+        # =====================================
+
+        conservative_guess = max(
+            1,
+            min(
+                5000,
+                (
+                    newest_id - range_start
+                ) // 1000
+            )
+        )
+
+        # =====================================
+        # BINARY SEARCH
+        # =====================================
+
+        page = binary_search_start_page(
+            archive_name,
+            board_name,
+            range_start,
+            newest_id,
+            max_page_guess=max(
+                100,
+                conservative_guess
+            )
+        )
+
+        print(
+            f"STARTING NEAR PAGE: "
+            f"{page}"
+        )
+
+    else:
+
+        page = 1
+
+    # =========================================
+    # MAIN LOOP
+    # =========================================
 
     while len(collected) < limit:
 
         scanned_pages += 1
 
-        if scanned_pages > MAX_PAGES:
+        if scanned_pages >= MAX_SCAN_PAGES:
+
+            print(
+                "MAX SCAN PAGES REACHED"
+            )
+
             break
-
-        ids = fetch_archive_page(
-            archive_name,
-            board_name,
-            page
-        )
-
-        if not ids:
-
-            empty_pages += 1
-
-            if empty_pages >= EMPTY_PAGE_LIMIT:
-                break
-
-            page += 1
-            continue
-
-        empty_pages = 0
-
-        highest = max(ids)
-        lowest = min(ids)
-
-        print(
-            f"SCAN PAGE {page} => "
-            f"{highest} -> {lowest}"
-        )
-
-        if highest < range_start:
-            # Page is entirely older than range.
-            # Allow a few more pages in case of
-            # ordering anomalies, then stop.
-            consecutive_out_of_range += 1
-
-            if consecutive_out_of_range >= 3:
-                break
-
-            page += 1
-            continue
-
-        else:
-            consecutive_out_of_range = 0
-
-        if lowest > range_end:
-            # Page is entirely newer than range
-            # → keep advancing toward older pages
-            page += 1
-            continue
-
-        # =====================================
-        # COLLECT THREADS IN RANGE
-        # =====================================
-
-        for tid in ids:
-
-            if tid in seen:
-                continue
-
-            if range_start <= tid <= range_end:
-
-                seen.add(tid)
-
-                collected.append(
-                    str(tid)
-                )
-
-                print(
-                    f"FOUND THREAD {tid}"
-                )
-
-                if len(collected) >= limit:
-                    break
 
         if progress_bar:
 
-            progress = min(
+            fake_progress = min(
                 95,
-                int(
-                    (
-                        len(collected)
-                        / limit
-                    ) * 100
-                )
+                scanned_pages * 2
             )
 
             progress_bar.progress(
-                progress
+                fake_progress
             )
 
         if status_text:
 
             status_text.caption(
                 f"Scanning page {page} | "
-                f"Collected "
-                f"{len(collected)} threads"
+                f"Collected {len(collected)} threads"
+            )
+
+        print(
+            f"\nSCANNING PAGE {page}"
+        )
+
+        page_thread_ids = fetch_page_ids(
+            archive_name,
+            board_name,
+            page
+        )
+
+        # =====================================
+        # EMPTY PAGE HANDLING
+        # =====================================
+
+        if not page_thread_ids:
+
+            empty_pages += 1
+
+            print(
+                f"EMPTY PAGE "
+                f"({empty_pages}/"
+                f"{MAX_EMPTY_PAGES})"
+            )
+
+            if empty_pages >= MAX_EMPTY_PAGES:
+
+                print(
+                    "TOO MANY EMPTY PAGES"
+                )
+
+                break
+
+            page += 1
+            continue
+
+        empty_pages = 0
+
+        highest = max(page_thread_ids)
+        lowest = min(page_thread_ids)
+
+        print(
+            f"PAGE RANGE: "
+            f"{highest} -> {lowest}"
+        )
+
+        # =====================================
+        # RANGE ALREADY PASSED
+        # =====================================
+
+        if (
+            range_start is not None
+            and all(
+                tid < range_start
+                for tid in page_thread_ids
+            )
+        ):
+
+            print(
+                "PASSED LOWER RANGE"
+            )
+
+            break
+
+        found_any = False
+
+        # =====================================
+        # PARSE THREAD IDS
+        # =====================================
+
+        for numeric_thread_id in page_thread_ids:
+
+            thread_id = str(
+                numeric_thread_id
+            )
+
+            if thread_id in seen:
+                continue
+
+            # =================================
+            # RANGE FILTER
+            # =================================
+
+            if (
+                range_start is not None
+                and range_end is not None
+            ):
+
+                if not (
+                    range_start
+                    <= numeric_thread_id
+                    <= range_end
+                ):
+                    continue
+
+            seen.add(thread_id)
+
+            collected.append(thread_id)
+
+            found_any = True
+
+            print(
+                f"FOUND THREAD: "
+                f"{thread_id}"
+            )
+
+            if len(collected) >= limit:
+                break
+
+        # =====================================
+        # SMART PAGE SKIP
+        # =====================================
+
+        if (
+            range_start is not None
+            and range_end is not None
+        ):
+
+            # page entirely newer than target
+            if all(
+                tid > range_end
+                for tid in page_thread_ids
+            ):
+
+                jump = max(
+                    1,
+                    min(
+                        100,
+                        (
+                            lowest - range_end
+                        ) // 5000
+                    )
+                )
+
+                page += jump
+
+                print(
+                    f"SKIPPING FORWARD "
+                    f"{jump} PAGES"
+                )
+
+                continue
+
+        if not found_any:
+
+            print(
+                "NO MATCHING THREADS"
             )
 
         page += 1
@@ -759,18 +875,26 @@ async def fetch_thread(
             ) as response:
 
                 if response.status != 200:
+
                     return []
 
                 html = await response.text()
 
-                return parse_thread(
+                parsed = parse_thread(
                     html,
                     thread_id,
                     board_name,
                     archive_name
                 )
 
-        except Exception:
+                return parsed
+
+        except Exception as e:
+
+            print(
+                f"THREAD FETCH ERROR: "
+                f"{thread_id} -> {e}"
+            )
 
             return []
 
@@ -822,6 +946,7 @@ async def scrape_threads(
     posts = []
 
     for result in results:
+
         posts.extend(result)
 
     return posts
@@ -938,6 +1063,10 @@ if st.button("Start Crawl"):
 
     start_time = datetime.now()
 
+    # =========================================
+    # THREAD ID LOADING UI
+    # =========================================
+
     collecting_placeholder = st.empty()
 
     collecting_placeholder.info(
@@ -947,6 +1076,10 @@ if st.button("Start Crawl"):
     loading_bar = st.progress(0)
 
     loading_status = st.empty()
+
+    # =========================================
+    # EXTRACT THREAD IDS
+    # =========================================
 
     thread_ids = extract_thread_ids(
 
@@ -984,12 +1117,14 @@ if st.button("Start Crawl"):
     if not thread_ids:
 
         st.error(
-            "No thread IDs found. "
-            "The specified ID range may not "
-            "exist in this archive."
+            "No thread IDs found."
         )
 
         st.stop()
+
+    # =========================================
+    # SCRAPING POSTS
+    # =========================================
 
     scraping_bar = st.progress(0)
 
@@ -1148,7 +1283,7 @@ if st.button("Start Crawl"):
     )
 
     # =========================================
-    # EXPORTS
+    # EXPORT FILES
     # =========================================
 
     export_files = {}
