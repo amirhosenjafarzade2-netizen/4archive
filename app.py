@@ -160,7 +160,31 @@ with st.sidebar:
     )
 
     # =========================================
-    # NEW FILTERS
+    # RANGE SCRAPING
+    # =========================================
+
+    use_range_scrape = st.checkbox(
+        "Enable thread ID range scraping"
+    )
+
+    range_start = st.number_input(
+        "Start thread ID",
+        min_value=0,
+        value=1000,
+        step=1,
+        disabled=not use_range_scrape
+    )
+
+    range_end = st.number_input(
+        "End thread ID",
+        min_value=0,
+        value=2000,
+        step=1,
+        disabled=not use_range_scrape
+    )
+
+    # =========================================
+    # FILTERS
     # =========================================
 
     thread_keyword_filter = st.text_input(
@@ -244,7 +268,9 @@ def build_thread_url(
 def extract_thread_ids(
     archive_name,
     board_name,
-    limit
+    limit,
+    range_start=None,
+    range_end=None
 ):
 
     config = ARCHIVES[archive_name]
@@ -323,6 +349,42 @@ def extract_thread_ids(
                 if thread_id in seen:
                     continue
 
+                numeric_thread_id = int(
+                    thread_id
+                )
+
+                # =====================================
+                # OPTIMIZED RANGE STOP
+                # =====================================
+
+                if (
+                    range_start is not None
+                    and numeric_thread_id < range_start
+                ):
+
+                    print(
+                        "Reached lower bound. "
+                        "Stopping pagination."
+                    )
+
+                    return collected[:limit]
+
+                # =====================================
+                # RANGE FILTER
+                # =====================================
+
+                if (
+                    range_start is not None
+                    and range_end is not None
+                ):
+
+                    if not (
+                        range_start
+                        <= numeric_thread_id
+                        <= range_end
+                    ):
+                        continue
+
                 seen.add(thread_id)
 
                 collected.append(thread_id)
@@ -339,10 +401,8 @@ def extract_thread_ids(
             if not found_any:
 
                 print(
-                    "NO THREADS FOUND"
+                    "NO THREADS FOUND ON PAGE"
                 )
-
-                break
 
             page += 1
 
@@ -662,7 +722,8 @@ def export_txt(posts):
         )
 
         output.append(
-            f"SUBJECT: {post.get('thread_subject', '')}"
+            f"SUBJECT: "
+            f"{post.get('thread_subject', '')}"
         )
 
         output.append(
@@ -730,9 +791,22 @@ if st.button("Start Crawl"):
     )
 
     thread_ids = extract_thread_ids(
+
         archive_source,
         board,
-        thread_limit
+        thread_limit,
+
+        range_start=(
+            int(range_start)
+            if use_range_scrape
+            else None
+        ),
+
+        range_end=(
+            int(range_end)
+            if use_range_scrape
+            else None
+        )
     )
 
     st.success(
