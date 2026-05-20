@@ -201,6 +201,8 @@ with st.sidebar:
             "sqlite"
         ],
         default=["json"]
+
+
     )
 
 
@@ -254,9 +256,7 @@ def build_thread_url(
         thread_id=thread_id
     )
 
-    return (
-        config["base"] + path
-    )
+    return config["base"] + path
 
 
 # =====================================================
@@ -275,7 +275,7 @@ def fetch_page_ids(
         page
     )
 
-    print(f"\nFETCHING PAGE: {page}")
+    print(f"\nFETCHING PAGE {page}")
     print(url)
 
     try:
@@ -288,11 +288,6 @@ def fetch_page_ids(
 
         if response.status_code != 200:
 
-            print(
-                f"BAD STATUS: "
-                f"{response.status_code}"
-            )
-
             return []
 
         soup = BeautifulSoup(
@@ -301,7 +296,6 @@ def fetch_page_ids(
         )
 
         ids = []
-
         seen = set()
 
         links = soup.find_all(
@@ -321,16 +315,16 @@ def fetch_page_ids(
             if not match:
                 continue
 
-            tid = str(
+            thread_id = str(
                 match.group(1)
             )
 
-            if tid in seen:
+            if thread_id in seen:
                 continue
 
-            seen.add(tid)
+            seen.add(thread_id)
 
-            ids.append(tid)
+            ids.append(thread_id)
 
         print(
             f"FOUND {len(ids)} THREAD IDS"
@@ -341,14 +335,14 @@ def fetch_page_ids(
     except Exception as e:
 
         print(
-            f"FETCH ERROR: {e}"
+            f"PAGE FETCH ERROR: {e}"
         )
 
         return []
 
 
 # =====================================================
-# THREAD EXTRACTION
+# THREAD ID EXTRACTION
 # =====================================================
 
 def extract_thread_ids(
@@ -406,20 +400,16 @@ def extract_thread_ids(
 
             status_text.caption(
                 f"Scanning page {page} | "
-                f"Collected {len(collected)} threads"
+                f"Found {len(collected)} thread IDs"
             )
 
-        page_thread_ids = fetch_page_ids(
+        page_ids = fetch_page_ids(
             archive_name,
             board_name,
             page
         )
 
-        if not page_thread_ids:
-
-            continue
-
-        for thread_id in page_thread_ids:
+        for thread_id in page_ids:
 
             if thread_id in seen:
                 continue
@@ -537,24 +527,20 @@ async def thread_matches_keyword(
 
                 keyword = keyword.lower()
 
-                subject_match = (
-                    keyword in subject.lower()
-                )
-
-                op_match = (
-                    keyword in op_text.lower()
-                )
-
                 matched = (
-                    subject_match
+
+                    keyword in subject.lower()
+
                     or
-                    op_match
+
+                    keyword in op_text.lower()
+
                 )
 
                 if matched:
 
                     print(
-                        f"MATCHED THREAD: "
+                        f"MATCHED THREAD "
                         f"{thread_id}"
                     )
 
@@ -563,7 +549,8 @@ async def thread_matches_keyword(
         except Exception as e:
 
             print(
-                f"FILTER ERROR {thread_id}: {e}"
+                f"FILTER ERROR "
+                f"{thread_id}: {e}"
             )
 
             return False
@@ -642,7 +629,9 @@ def extract_thread_subject(soup):
 
     for selector in selectors:
 
-        el = soup.select_one(selector)
+        el = soup.select_one(
+            selector
+        )
 
         if el:
 
@@ -692,7 +681,9 @@ def extract_post_text(post):
 
     for selector in selectors:
 
-        el = post.select_one(selector)
+        el = post.select_one(
+            selector
+        )
 
         if el:
 
@@ -809,6 +800,11 @@ async def fetch_thread(
     timeout_seconds
 ):
 
+    print(
+        f"SCRAPING THREAD "
+        f"{thread_id}"
+    )
+
     url = build_thread_url(
         archive_name,
         board_name,
@@ -840,8 +836,8 @@ async def fetch_thread(
         except Exception as e:
 
             print(
-                f"THREAD FETCH ERROR: "
-                f"{thread_id} -> {e}"
+                f"THREAD FETCH ERROR "
+                f"{thread_id}: {e}"
             )
 
             return []
@@ -1022,7 +1018,7 @@ if st.button("Start Crawl"):
     loading_status = st.empty()
 
     # =========================================
-    # COLLECT IDS
+    # DISCOVER THREAD IDS
     # =========================================
 
     thread_ids = extract_thread_ids(
@@ -1047,14 +1043,16 @@ if st.button("Start Crawl"):
         status_text=loading_status
     )
 
+    original_count = len(thread_ids)
+
     # =========================================
-    # FILTER IDS
+    # FILTER THREAD IDS
     # =========================================
 
     if thread_keyword_filter:
 
         collecting_placeholder.info(
-            "Filtering matching threads..."
+            "Filtering threads..."
         )
 
         thread_ids = asyncio.run(
@@ -1070,16 +1068,18 @@ if st.button("Start Crawl"):
 
         )
 
+    filtered_count = len(thread_ids)
+
     loading_bar.progress(100)
 
     loading_status.caption(
-        "Thread collection complete."
+        "Thread filtering complete."
     )
 
     collecting_placeholder.success(
-        f"Collected "
-        f"{len(thread_ids)} "
-        f"matching thread IDs"
+        f"Matched "
+        f"{filtered_count} / "
+        f"{original_count} threads"
     )
 
     if not thread_ids:
@@ -1091,7 +1091,7 @@ if st.button("Start Crawl"):
         st.stop()
 
     # =========================================
-    # SCRAPE MATCHING THREADS ONLY
+    # SCRAPE ONLY MATCHING THREADS
     # =========================================
 
     scraping_bar = st.progress(0)
