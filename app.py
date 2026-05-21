@@ -268,6 +268,122 @@ def build_thread_url(
 
 
 # =====================================================
+# FILTER CHECK
+# =====================================================
+
+def thread_matches_filter(
+    archive_name,
+    board_name,
+    thread_id,
+    keyword
+):
+
+    if not keyword:
+        return True
+
+    keyword = keyword.lower()
+
+    try:
+
+        url = build_thread_url(
+            archive_name,
+            board_name,
+            thread_id
+        )
+
+        response = requests.get(
+            url,
+            headers=HEADERS,
+            timeout=20
+        )
+
+        if response.status_code != 200:
+            return False
+
+        soup = BeautifulSoup(
+            response.text,
+            "html.parser"
+        )
+
+        # =====================================
+        # SUBJECT
+        # =====================================
+
+        subject = ""
+
+        subject_selectors = [
+            ".subject",
+            ".post_title",
+            ".title",
+            ".thread_title"
+        ]
+
+        for selector in subject_selectors:
+
+            el = soup.select_one(selector)
+
+            if el:
+
+                subject = normalize_whitespace(
+                    el.get_text(
+                        " ",
+                        strip=True
+                    )
+                )
+
+                if subject:
+                    break
+
+        if keyword in subject.lower():
+            return True
+
+        # =====================================
+        # OP TEXT
+        # =====================================
+
+        op_selectors = [
+            ".op blockquote",
+            ".thread_op blockquote",
+            ".post.op blockquote",
+            "blockquote",
+            "article",
+            ".text"
+        ]
+
+        op_text = ""
+
+        for selector in op_selectors:
+
+            el = soup.select_one(selector)
+
+            if el:
+
+                op_text = normalize_whitespace(
+                    el.get_text(
+                        " ",
+                        strip=True
+                    )
+                )
+
+                if op_text:
+                    break
+
+        if keyword in op_text.lower():
+            return True
+
+        return False
+
+    except Exception as e:
+
+        print(
+            f"FILTER CHECK ERROR: "
+            f"{thread_id} -> {e}"
+        )
+
+        return False
+
+
+# =====================================================
 # PAGE FETCHING
 # =====================================================
 
@@ -357,6 +473,7 @@ def extract_thread_ids(
     archive_name,
     board_name,
     limit,
+    keyword_filter=None,
     start_page=1,
     pages_to_scan=None,
     progress_bar=None,
@@ -365,10 +482,6 @@ def extract_thread_ids(
 
     collected = []
     seen = set()
-
-    # =====================================
-    # PAGE RANGE
-    # =====================================
 
     if pages_to_scan is None:
 
@@ -390,20 +503,12 @@ def extract_thread_ids(
 
     scanned = 0
 
-    # =====================================
-    # MAIN LOOP
-    # =====================================
-
     for page in range(
         start_page,
         end_page + 1
     ):
 
         scanned += 1
-
-        # =================================
-        # UI
-        # =================================
 
         if progress_bar:
 
@@ -423,10 +528,6 @@ def extract_thread_ids(
                 f"Collected {len(collected)} threads"
             )
 
-        # =================================
-        # FETCH IDS
-        # =================================
-
         page_thread_ids = fetch_page_ids(
             archive_name,
             board_name,
@@ -441,15 +542,6 @@ def extract_thread_ids(
 
             continue
 
-        print(
-            f"PAGE {page} -> "
-            f"{len(page_thread_ids)} THREADS"
-        )
-
-        # =================================
-        # PROCESS IDS
-        # =================================
-
         for numeric_thread_id in page_thread_ids:
 
             thread_id = str(
@@ -458,6 +550,28 @@ def extract_thread_ids(
 
             if thread_id in seen:
                 continue
+
+            # =====================================
+            # FILTER BEFORE COLLECTING
+            # =====================================
+
+            if keyword_filter:
+
+                matches = thread_matches_filter(
+                    archive_name,
+                    board_name,
+                    thread_id,
+                    keyword_filter
+                )
+
+                if not matches:
+
+                    print(
+                        f"SKIPPED THREAD: "
+                        f"{thread_id}"
+                    )
+
+                    continue
 
             seen.add(thread_id)
 
@@ -469,10 +583,6 @@ def extract_thread_ids(
                 f"FOUND THREAD: "
                 f"{thread_id}"
             )
-
-            # =============================
-            # LIMIT
-            # =============================
 
             if len(collected) >= limit:
 
@@ -503,26 +613,6 @@ def parse_thread(
 
     posts = []
 
-    seen = set()
-
-    candidates = []
-
-    candidates.extend(
-        soup.select(".post_data")
-    )
-
-    candidates.extend(
-        soup.select(".text")
-    )
-
-    candidates.extend(
-        soup.find_all("blockquote")
-    )
-
-    candidates.extend(
-        soup.find_all("article")
-    )
-
     thread_subject = ""
 
     subject_selectors = [
@@ -548,10 +638,41 @@ def parse_thread(
             if thread_subject:
                 break
 
-    for idx, block in enumerate(candidates):
+    # =====================================
+    # POST CONTAINERS
+    # =====================================
+
+    containers = []
+
+    selectors = [
+        ".post",
+        ".reply",
+        "article"
+    ]
+
+    for selector in selectors:
+
+        found = soup.select(selector)
+
+        if found:
+
+            containers = found
+            break
+
+    # fallback
+
+    if not containers:
+
+        containers = soup.find_all(
+            "blockquote"
+        )
+
+    seen = set()
+
+    for idx, container in enumerate(containers):
 
         text = normalize_whitespace(
-            block.get_text(
+            container.get_text(
                 " ",
                 strip=True
             )
@@ -569,6 +690,11 @@ def parse_thread(
 
         is_op = idx == 0
 
+        post_id = (
+            container.get("id")
+            or f"{thread_id}_{idx}"
+        )
+
         posts.append({
 
             "archive":
@@ -581,7 +707,7 @@ def parse_thread(
                 thread_id,
 
             "post_id":
-                f"{thread_id}_{idx}",
+                post_id,
 
             "is_op":
                 is_op,
@@ -847,6 +973,12 @@ if st.button("Start Crawl"):
         board,
         thread_limit,
 
+        keyword_filter=(
+            thread_keyword_filter
+            if thread_keyword_filter
+            else None
+        ),
+
         start_page=(
             int(start_page)
             if use_page_range
@@ -877,7 +1009,7 @@ if st.button("Start Crawl"):
     if not thread_ids:
 
         st.error(
-            "No thread IDs found."
+            "No matching thread IDs found."
         )
 
         st.stop()
@@ -913,60 +1045,21 @@ if st.button("Start Crawl"):
     )
 
     # =========================================
-    # THREAD FILTER
-    # =========================================
-
-    if thread_keyword_filter:
-
-        keyword = (
-            thread_keyword_filter.lower()
-        )
-
-        matching_thread_ids = set()
-
-        for p in posts:
-
-            subject_match = (
-                keyword in
-                p.get(
-                    "thread_subject",
-                    ""
-                ).lower()
-            )
-
-            op_match = (
-                p["is_op"]
-                and
-                keyword in
-                p["content"].lower()
-            )
-
-            if subject_match or op_match:
-
-                matching_thread_ids.add(
-                    p["thread_id"]
-                )
-
-        posts = [
-
-            p for p in posts
-
-            if p["thread_id"]
-            in matching_thread_ids
-        ]
-
-    # =========================================
     # POST FILTER
     # =========================================
 
     if post_keyword_filter:
 
+        keyword = (
+            post_keyword_filter.lower()
+        )
+
         posts = [
 
             p for p in posts
 
-            if post_keyword_filter.lower()
-            in p["content"].lower()
+            if keyword in
+            p["content"].lower()
         ]
 
     # =========================================
