@@ -59,10 +59,10 @@ ARCHIVES = {
             "https://archive.4plebs.org",
 
         "page1":
-            "/{board}/",
+            "/{board}/gallery/1/",
 
         "pageN":
-            "/{board}/page/{page}/",
+            "/{board}/gallery/{page}/",
 
         "thread":
             "/{board}/thread/{thread_id}/",
