@@ -435,20 +435,58 @@ def fetch_page_ids(
 
             href = link["href"]
 
-            match = re.search(
-                r"/[a-zA-Z0-9]+/thread/(\d+)",
-                href
-            )
+            # ---------------------------------
+            # 4PLEBS SPECIAL HANDLING ONLY
+            # ---------------------------------
 
-            if match:
+            if archive_name == "4plebs":
 
-                tid = int(
-                    match.group(1)
+                patterns = [
+
+                    r"/thread/(\d+)",
+                    r"/[a-zA-Z0-9]+/thread/(\d+)",
+                    r"thread/(\d+)",
+
+                ]
+
+                thread_id = None
+
+                for pattern in patterns:
+
+                    match = re.search(
+                        pattern,
+                        href
+                    )
+
+                    if match:
+
+                        thread_id = match.group(1)
+                        break
+
+                if thread_id:
+
+                    tid = int(thread_id)
+
+                    if tid not in ids:
+
+                        ids.append(tid)
+
+            else:
+
+                match = re.search(
+                    r"/[a-zA-Z0-9]+/thread/(\d+)",
+                    href
                 )
 
-                if tid not in ids:
+                if match:
 
-                    ids.append(tid)
+                    tid = int(
+                        match.group(1)
+                    )
+
+                    if tid not in ids:
+
+                        ids.append(tid)
 
         print(
             f"FOUND {len(ids)} THREAD IDS"
