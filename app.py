@@ -81,7 +81,7 @@ ARCHIVES = {
             "/{board}/page/{page}/",
 
         "thread":
-            "/thread/{thread_id}/",
+            "/{board}/thread/{thread_id}/",  # FIXED: was missing {board}
     },
 
     "b4k": {
@@ -96,7 +96,7 @@ ARCHIVES = {
             "/{board}/page/{page}/",
 
         "thread":
-            "/thread/{thread_id}/",
+            "/{board}/thread/{thread_id}/",  # FIXED: was missing {board}
     }
 }
 
