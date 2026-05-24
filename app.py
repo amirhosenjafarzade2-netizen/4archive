@@ -165,14 +165,15 @@ with st.sidebar:
     )
 
     # =========================================
-    # PAGE RANGE SCRAPING
-    # (only relevant when search is Disabled)
+    # PAGE RANGE
     # =========================================
 
     use_page_range = st.checkbox(
-        "Enable page-range scraping",
-        disabled=(search_mode != "Disabled"),
-        help="Page-range scraping is only used when Search Mode is Disabled."
+        "Enable page-range",
+        help=(
+            "Limit which pages of results to scan. "
+            "Works with both Search Mode and page scraping."
+        )
     )
 
     start_page = st.number_input(
@@ -180,7 +181,7 @@ with st.sidebar:
         min_value=1,
         value=1,
         step=1,
-        disabled=(not use_page_range or search_mode != "Disabled")
+        disabled=not use_page_range
     )
 
     pages_to_scan = st.number_input(
@@ -188,7 +189,7 @@ with st.sidebar:
         min_value=1,
         value=10,
         step=1,
-        disabled=(not use_page_range or search_mode != "Disabled")
+        disabled=not use_page_range
     )
 
     # =========================================
@@ -407,21 +408,31 @@ def search_thread_ids(
     keyword,
     mode,
     limit,
+    start_page=1,
+    pages_to_scan=None,
     status_text=None
 ):
     """
     Query the archive's own search endpoint and
     collect up to `limit` matching thread IDs.
 
-    Much faster than scanning pages and downloading
-    every thread to filter manually.
+    start_page / pages_to_scan optionally restrict
+    which pages of search results to read.
     """
 
     collected = []
     seen = set()
-    page = 1
+    page = start_page
 
-    while len(collected) < limit:
+    end_page = (
+        (start_page + pages_to_scan - 1)
+        if pages_to_scan is not None
+        else None
+    )
+
+    while len(collected) < limit and (
+        end_page is None or page <= end_page
+    ):
 
         url = build_search_url(
             archive_name,
@@ -726,6 +737,8 @@ def extract_thread_ids(
             search_kw,
             search_md,
             limit,
+            start_page=start_page,
+            pages_to_scan=pages_to_scan,
             status_text=status_text
         )
 
