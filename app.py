@@ -6,6 +6,7 @@ import sqlite3
 import zipfile
 from datetime import datetime
 from pathlib import Path
+from urllib.parse import quote
 
 import aiohttp
 import pandas as pd
@@ -146,11 +147,32 @@ with st.sidebar:
     )
 
     # =========================================
+    # SEARCH MODE (replaces keyword filter)
+    # =========================================
+
+    search_mode = st.selectbox(
+        "Thread Search Mode",
+        [
+            "Disabled",
+            "Subject",
+            "OP Text"
+        ]
+    )
+
+    search_keyword = st.text_input(
+        "Search Keyword",
+        disabled=(search_mode == "Disabled")
+    )
+
+    # =========================================
     # PAGE RANGE SCRAPING
+    # (only relevant when search is Disabled)
     # =========================================
 
     use_page_range = st.checkbox(
-        "Enable page-range scraping"
+        "Enable page-range scraping",
+        disabled=(search_mode != "Disabled"),
+        help="Page-range scraping is only used when Search Mode is Disabled."
     )
 
     start_page = st.number_input(
@@ -158,7 +180,7 @@ with st.sidebar:
         min_value=1,
         value=1,
         step=1,
-        disabled=not use_page_range
+        disabled=(not use_page_range or search_mode != "Disabled")
     )
 
     pages_to_scan = st.number_input(
@@ -166,16 +188,12 @@ with st.sidebar:
         min_value=1,
         value=10,
         step=1,
-        disabled=not use_page_range
+        disabled=(not use_page_range or search_mode != "Disabled")
     )
 
     # =========================================
     # FILTERS
     # =========================================
-
-    thread_keyword_filter = st.text_input(
-        "Thread subject / OP keyword filter"
-    )
 
     post_keyword_filter = st.text_input(
         "Post content keyword filter"
@@ -268,123 +286,288 @@ def build_thread_url(
 
 
 # =====================================================
-# FILTER CHECK
+# ARCHIVE-NATIVE SEARCH URL BUILDER
 # =====================================================
 
-def thread_matches_filter(
+def build_search_url(
     archive_name,
     board_name,
-    thread_id,
-    keyword
+    keyword,
+    mode,
+    page=1
 ):
+    """
+    Build an archive-specific search URL.
 
-    if not keyword:
-        return True
+    mode: "Subject" | "OP Text"
+    page: 1-based page number
+    """
 
-    keyword = keyword.lower()
+    kw = quote(keyword)
 
-    try:
+    # -------------------------------------------------
+    # WAROSU: query-string based search
+    # -------------------------------------------------
 
-        url = build_thread_url(
-            archive_name,
-            board_name,
-            thread_id
+    if archive_name == "warosu":
+
+        if mode == "Subject":
+
+            url = (
+                f"https://warosu.org/{board_name}/"
+                f"?task=search2"
+                f"&ghost=false"
+                f"&search_text="
+                f"&search_subject={kw}"
+                f"&search_username="
+                f"&search_tripcode="
+                f"&search_email="
+                f"&search_filename="
+                f"&search_datefrom="
+                f"&search_dateto="
+                f"&search_media_hash="
+                f"&search_op=all"
+                f"&search_del=dontcare"
+                f"&search_int=dontcare"
+                f"&search_ord=new"
+                f"&search_capcode=all"
+                f"&search_res=post"
+            )
+
+        else:  # OP Text
+
+            url = (
+                f"https://warosu.org/{board_name}/"
+                f"?task=search2"
+                f"&ghost=false"
+                f"&search_text={kw}"
+                f"&search_subject="
+                f"&search_username="
+                f"&search_tripcode="
+                f"&search_email="
+                f"&search_filename="
+                f"&search_datefrom="
+                f"&search_dateto="
+                f"&search_media_hash="
+                f"&search_op=op"
+                f"&search_del=dontcare"
+                f"&search_int=dontcare"
+                f"&search_ord=new"
+                f"&search_capcode=all"
+                f"&search_res=post"
+            )
+
+        if page > 1:
+            url += f"&offset={page}"
+
+        return url
+
+    # -------------------------------------------------
+    # 4PLEBS / DESUARCHIVE / B4K: path-based search
+    # -------------------------------------------------
+
+    base = ARCHIVES[archive_name]["base"]
+
+    if mode == "Subject":
+
+        if page == 1:
+            return (
+                f"{base}/{board_name}/"
+                f"search/subject/{kw}/"
+            )
+
+        return (
+            f"{base}/{board_name}/"
+            f"search/subject/{kw}/"
+            f"page/{page}/"
         )
 
-        response = requests.get(
-            url,
-            headers=HEADERS,
-            timeout=20
+    else:  # OP Text
+
+        if page == 1:
+            return (
+                f"{base}/{board_name}/"
+                f"search/text/{kw}/type/op/"
+            )
+
+        return (
+            f"{base}/{board_name}/"
+            f"search/text/{kw}/type/op/"
+            f"page/{page}/"
         )
-
-        if response.status_code != 200:
-            return False
-
-        soup = BeautifulSoup(
-            response.text,
-            "html.parser"
-        )
-
-        # =====================================
-        # SUBJECT
-        # =====================================
-
-        subject = ""
-
-        subject_selectors = [
-            ".subject",
-            ".post_title",
-            ".title",
-            ".thread_title"
-        ]
-
-        for selector in subject_selectors:
-
-            el = soup.select_one(selector)
-
-            if el:
-
-                subject = normalize_whitespace(
-                    el.get_text(
-                        " ",
-                        strip=True
-                    )
-                )
-
-                if subject:
-                    break
-
-        if keyword in subject.lower():
-            return True
-
-        # =====================================
-        # OP TEXT
-        # =====================================
-
-        op_selectors = [
-            ".op blockquote",
-            ".thread_op blockquote",
-            ".post.op blockquote",
-            "blockquote",
-            "article",
-            ".text"
-        ]
-
-        op_text = ""
-
-        for selector in op_selectors:
-
-            el = soup.select_one(selector)
-
-            if el:
-
-                op_text = normalize_whitespace(
-                    el.get_text(
-                        " ",
-                        strip=True
-                    )
-                )
-
-                if op_text:
-                    break
-
-        if keyword in op_text.lower():
-            return True
-
-        return False
-
-    except Exception as e:
-
-        print(
-            f"FILTER CHECK ERROR: "
-            f"{thread_id} -> {e}"
-        )
-
-        return False
 
 
 # =====================================================
-# PAGE FETCHING
+# ARCHIVE-NATIVE SEARCH
+# =====================================================
+
+def search_thread_ids(
+    archive_name,
+    board_name,
+    keyword,
+    mode,
+    limit,
+    status_text=None
+):
+    """
+    Query the archive's own search endpoint and
+    collect up to `limit` matching thread IDs.
+
+    Much faster than scanning pages and downloading
+    every thread to filter manually.
+    """
+
+    collected = []
+    seen = set()
+    page = 1
+
+    while len(collected) < limit:
+
+        url = build_search_url(
+            archive_name,
+            board_name,
+            keyword,
+            mode,
+            page
+        )
+
+        print(f"\nSEARCH PAGE {page}")
+        print(url)
+
+        if status_text:
+            status_text.caption(
+                f"Searching page {page} | "
+                f"Found {len(collected)} threads so far…"
+            )
+
+        try:
+
+            response = requests.get(
+                url,
+                headers=HEADERS,
+                timeout=30
+            )
+
+            if response.status_code != 200:
+
+                print(
+                    f"BAD STATUS: "
+                    f"{response.status_code}"
+                )
+
+                break
+
+            soup = BeautifulSoup(
+                response.text,
+                "html.parser"
+            )
+
+            found_this_page = 0
+
+            # ------------------------------------------
+            # Try article-based extraction first
+            # (4plebs, desuarchive, b4k)
+            # ------------------------------------------
+
+            articles = soup.select("article.post")
+
+            if articles:
+
+                for article in articles:
+
+                    link = article.select_one(
+                        'a[href*="/thread/"]'
+                    )
+
+                    if not link:
+                        continue
+
+                    m = re.search(
+                        r"/thread/(\d+)",
+                        link["href"]
+                    )
+
+                    if not m:
+                        continue
+
+                    tid = m.group(1)
+
+                    if tid in seen:
+                        continue
+
+                    seen.add(tid)
+                    collected.append(tid)
+                    found_this_page += 1
+
+                    print(f"FOUND THREAD: {tid}")
+
+                    if len(collected) >= limit:
+                        return collected
+
+            else:
+
+                # --------------------------------------
+                # Fallback: scan all links for /thread/
+                # (warosu and other archives)
+                # --------------------------------------
+
+                links = soup.find_all(
+                    "a",
+                    href=True
+                )
+
+                for link in links:
+
+                    href = link["href"]
+
+                    m = re.search(
+                        r"/thread/(\d+)",
+                        href
+                    )
+
+                    if not m:
+                        continue
+
+                    tid = m.group(1)
+
+                    if tid in seen:
+                        continue
+
+                    seen.add(tid)
+                    collected.append(tid)
+                    found_this_page += 1
+
+                    print(f"FOUND THREAD: {tid}")
+
+                    if len(collected) >= limit:
+                        return collected
+
+            print(
+                f"FOUND {found_this_page} "
+                f"THREADS ON PAGE {page}"
+            )
+
+            # ------------------------------------------
+            # Stop if nothing came back on this page
+            # ------------------------------------------
+
+            if found_this_page == 0:
+
+                print("NO MORE RESULTS")
+                break
+
+            page += 1
+
+        except Exception as e:
+
+            print(f"SEARCH ERROR: {e}")
+            break
+
+    return collected
+
+
+# =====================================================
+# PAGE FETCHING  (used when search is Disabled)
 # =====================================================
 
 def fetch_page_ids(
@@ -504,19 +687,51 @@ def fetch_page_ids(
 
 
 # =====================================================
-# THREAD EXTRACTION
+# THREAD ID EXTRACTION
+# (search-first, page-scan fallback)
 # =====================================================
 
 def extract_thread_ids(
     archive_name,
     board_name,
     limit,
-    keyword_filter=None,
+    search_kw=None,
+    search_md=None,
     start_page=1,
     pages_to_scan=None,
     progress_bar=None,
     status_text=None
 ):
+    """
+    If a search keyword + mode are provided, use the
+    archive's native search endpoint — much faster.
+
+    Otherwise fall back to page-scanning.
+    """
+
+    # =========================================
+    # FAST PATH: archive-native search
+    # =========================================
+
+    if search_kw and search_md and search_md != "Disabled":
+
+        print(
+            f"USING ARCHIVE SEARCH: "
+            f'"{search_kw}" ({search_md})'
+        )
+
+        return search_thread_ids(
+            archive_name,
+            board_name,
+            search_kw,
+            search_md,
+            limit,
+            status_text=status_text
+        )
+
+    # =========================================
+    # SLOW PATH: page-by-page scan
+    # =========================================
 
     collected = []
     seen = set()
@@ -588,28 +803,6 @@ def extract_thread_ids(
 
             if thread_id in seen:
                 continue
-
-            # =====================================
-            # FILTER BEFORE COLLECTING
-            # =====================================
-
-            if keyword_filter:
-
-                matches = thread_matches_filter(
-                    archive_name,
-                    board_name,
-                    thread_id,
-                    keyword_filter
-                )
-
-                if not matches:
-
-                    print(
-                        f"SKIPPED THREAD: "
-                        f"{thread_id}"
-                    )
-
-                    continue
 
             seen.add(thread_id)
 
@@ -989,20 +1182,40 @@ def build_zip(files_dict):
 
 if st.button("Start Crawl"):
 
+    # Validate: if search is enabled, keyword must be set
+    if search_mode != "Disabled" and not search_keyword.strip():
+
+        st.error(
+            "Please enter a Search Keyword "
+            "or set Thread Search Mode to Disabled."
+        )
+
+        st.stop()
+
     start_time = datetime.now()
 
     collecting_placeholder = st.empty()
 
-    collecting_placeholder.info(
-        "Collecting thread IDs..."
-    )
+    # Different message depending on mode
+    if search_mode != "Disabled":
+
+        collecting_placeholder.info(
+            f"Searching archive for "
+            f'"{search_keyword}" ({search_mode})…'
+        )
+
+    else:
+
+        collecting_placeholder.info(
+            "Collecting thread IDs…"
+        )
 
     loading_bar = st.progress(0)
 
     loading_status = st.empty()
 
     # =========================================
-    # EXTRACT IDS
+    # EXTRACT / SEARCH IDS
     # =========================================
 
     thread_ids = extract_thread_ids(
@@ -1011,9 +1224,15 @@ if st.button("Start Crawl"):
         board,
         thread_limit,
 
-        keyword_filter=(
-            thread_keyword_filter
-            if thread_keyword_filter
+        search_kw=(
+            search_keyword.strip()
+            if search_mode != "Disabled"
+            else None
+        ),
+
+        search_md=(
+            search_mode
+            if search_mode != "Disabled"
             else None
         ),
 
@@ -1061,7 +1280,7 @@ if st.button("Start Crawl"):
     scraping_status = st.empty()
 
     scraping_status.caption(
-        "Scraping thread contents..."
+        "Scraping thread contents…"
     )
 
     posts = asyncio.run(
