@@ -32,6 +32,14 @@ DATA_DIR.mkdir(exist_ok=True)
 
 MAX_SCAN_PAGES = 50000
 
+# Archives that expose the FoolFuuka JSON API.
+# Used instead of HTML scraping for desuarchive + b4k.
+
+FOOLFUUKA_API_ARCHIVES = {
+    "desuarchive",
+    "b4k"
+}
+
 
 # =====================================================
 # ARCHIVES
@@ -81,7 +89,7 @@ ARCHIVES = {
             "/{board}/page/{page}/",
 
         "thread":
-            "/thread/{thread_id}/",
+            "/{board}/thread/{thread_id}/",
     },
 
     "b4k": {
@@ -96,7 +104,7 @@ ARCHIVES = {
             "/{board}/page/{page}/",
 
         "thread":
-            "/thread/{thread_id}/",
+            "/{board}/thread/{thread_id}/",
     }
 }
 
@@ -136,7 +144,7 @@ with st.sidebar:
 
     board = st.text_input(
         "Board",
-        value="biz"
+        value="a"
     )
 
     thread_limit = st.number_input(
@@ -147,7 +155,7 @@ with st.sidebar:
     )
 
     # =========================================
-    # SEARCH MODE (replaces keyword filter)
+    # SEARCH MODE
     # =========================================
 
     search_mode = st.selectbox(
@@ -163,6 +171,21 @@ with st.sidebar:
         "Search Keyword",
         disabled=(search_mode == "Disabled")
     )
+
+    # Sort order — only shown for 4plebs when search is active
+    if archive_source == "4plebs" and search_mode != "Disabled":
+
+        sort_order = st.selectbox(
+            "Sort Order (4plebs only)",
+            [
+                "Newest first",
+                "Oldest first"
+            ]
+        )
+
+    else:
+
+        sort_order = "Newest first"
 
     # =========================================
     # PAGE RANGE
@@ -287,7 +310,429 @@ def build_thread_url(
 
 
 # =====================================================
-# ARCHIVE-NATIVE SEARCH URL BUILDER
+# FOOLFUUKA JSON API HELPERS
+# (used for desuarchive + b4k instead of HTML)
+# =====================================================
+
+def foolfuuka_api_base(archive_name):
+
+    return (
+        ARCHIVES[archive_name]["base"]
+        + "/_/api/chan"
+    )
+
+
+def foolfuuka_index_page(
+    archive_name,
+    board_name,
+    page
+):
+    """
+    GET /_/api/chan/index/?board=<board>&page=<page>
+
+    Returns a list of thread_num strings found on
+    that index page, or [] on failure.
+
+    Response shape:
+    {
+      "<thread_num>": {
+        "op":    { <POST OBJECT> },
+        "posts": [ { <POST OBJECT> }, ... ]
+      },
+      ...
+    }
+    """
+
+    url = (
+        foolfuuka_api_base(archive_name)
+        + f"/index/?board={board_name}&page={page}"
+    )
+
+    print(f"\nAPI INDEX  page={page}")
+    print(url)
+
+    try:
+
+        response = requests.get(
+            url,
+            headers=HEADERS,
+            timeout=30
+        )
+
+        if response.status_code != 200:
+
+            print(
+                f"BAD STATUS: "
+                f"{response.status_code}"
+            )
+
+            return []
+
+        data = response.json()
+
+        ids = []
+
+        for thread_num, thread_data in data.items():
+
+            if re.match(r"^\d+$", str(thread_num)):
+
+                ids.append(str(thread_num))
+
+        print(f"FOUND {len(ids)} THREADS")
+
+        return ids
+
+    except Exception as e:
+
+        print(f"API INDEX ERROR: {e}")
+
+        return []
+
+
+def foolfuuka_search(
+    archive_name,
+    board_name,
+    keyword,
+    mode,
+    limit,
+    start_pg=1,
+    pages=None,
+    status_text=None
+):
+    """
+    GET /_/api/chan/search/?board=<board>&subject=<kw>
+    or  /_/api/chan/search/?board=<board>&text=<kw>&type=op
+
+    Collects up to `limit` thread_num strings.
+
+    FIX: Filter to op == "1" for both Subject and OP Text modes.
+    The Subject search returns any post whose subject matches —
+    including replies. We need only OPs so thread_num is valid.
+
+    Response shape:
+    [
+      {
+        "posts": [ { <POST OBJECT> }, ... ]
+      }
+    ]
+    """
+
+    kw = quote(keyword)
+
+    collected = []
+    seen = set()
+    page = start_pg
+
+    end_page = (
+        (start_pg + pages - 1)
+        if pages is not None
+        else None
+    )
+
+    while len(collected) < limit and (
+        end_page is None or page <= end_page
+    ):
+
+        if mode == "Subject":
+
+            url = (
+                foolfuuka_api_base(archive_name)
+                + f"/search/"
+                + f"?board={board_name}"
+                + f"&subject={kw}"
+                + f"&page={page}"
+            )
+
+        else:  # OP Text
+
+            url = (
+                foolfuuka_api_base(archive_name)
+                + f"/search/"
+                + f"?board={board_name}"
+                + f"&text={kw}"
+                + f"&type=op"
+                + f"&page={page}"
+            )
+
+        print(f"\nAPI SEARCH  page={page}")
+        print(url)
+
+        if status_text:
+
+            status_text.caption(
+                f"Searching page {page} | "
+                f"Found {len(collected)} threads so far…"
+            )
+
+        try:
+
+            response = requests.get(
+                url,
+                headers=HEADERS,
+                timeout=30
+            )
+
+            if response.status_code != 200:
+
+                print(
+                    f"BAD STATUS: "
+                    f"{response.status_code}"
+                )
+
+                break
+
+            data = response.json()
+
+            found_this_page = 0
+
+            # ------------------------------------------
+            # Response is a list of result-set objects,
+            # each containing a "posts" list.
+            #
+            # FIX: Require op == "1" for both modes.
+            # Subject search can return replies whose
+            # subject field matches — we only want OPs
+            # so that thread_num == the thread ID.
+            # ------------------------------------------
+
+            if isinstance(data, list):
+
+                for item in data:
+
+                    posts = item.get("posts", [])
+
+                    for post in posts:
+
+                        if str(post.get("op", "0")) != "1":
+                            continue
+
+                        tid = str(
+                            post.get("thread_num")
+                            or post.get("num", "")
+                        )
+
+                        if not tid or tid in seen:
+                            continue
+
+                        seen.add(tid)
+                        collected.append(tid)
+                        found_this_page += 1
+
+                        print(f"FOUND THREAD: {tid}")
+
+                        if len(collected) >= limit:
+                            return collected
+
+            print(
+                f"FOUND {found_this_page} "
+                f"THREADS ON PAGE {page}"
+            )
+
+            if found_this_page == 0:
+
+                print("NO MORE RESULTS")
+                break
+
+            page += 1
+
+        except Exception as e:
+
+            print(f"API SEARCH ERROR: {e}")
+            break
+
+    return collected
+
+
+async def foolfuuka_fetch_thread(
+    session,
+    semaphore,
+    archive_name,
+    board_name,
+    thread_id,
+    timeout_seconds
+):
+    """
+    GET /_/api/chan/thread/?board=<board>&num=<thread_id>
+
+    Returns a list of post dicts.
+
+    Response shape:
+    {
+      "<thread_num>": {
+        "op":    { <POST OBJECT> },
+        "posts": { "<num>": { <POST OBJECT> }, ... }
+      }
+    }
+    """
+
+    url = (
+        foolfuuka_api_base(archive_name)
+        + f"/thread/"
+        + f"?board={board_name}"
+        + f"&num={thread_id}"
+    )
+
+    thread_url = build_thread_url(
+        archive_name,
+        board_name,
+        thread_id
+    )
+
+    async with semaphore:
+
+        try:
+
+            async with session.get(
+                url,
+                timeout=timeout_seconds,
+                ssl=False
+            ) as response:
+
+                if response.status != 200:
+
+                    print(
+                        f"API THREAD {thread_id} "
+                        f"HTTP {response.status}"
+                    )
+
+                    return []
+
+                data = await response.json(
+                    content_type=None
+                )
+
+            posts = []
+
+            for _tnum, thread_data in data.items():
+
+                # OP post
+
+                op_post = thread_data.get("op")
+
+                if op_post:
+
+                    posts.append(
+                        foolfuuka_post_to_dict(
+                            op_post,
+                            thread_id,
+                            board_name,
+                            archive_name,
+                            thread_url,
+                            is_op=True
+                        )
+                    )
+
+                # Reply posts (dict keyed by num, or list)
+
+                replies = thread_data.get("posts", {})
+
+                if isinstance(replies, dict):
+                    replies = replies.values()
+
+                for reply in replies:
+
+                    posts.append(
+                        foolfuuka_post_to_dict(
+                            reply,
+                            thread_id,
+                            board_name,
+                            archive_name,
+                            thread_url,
+                            is_op=False
+                        )
+                    )
+
+            return posts
+
+        except Exception as e:
+
+            print(
+                f"API THREAD FETCH ERROR: "
+                f"{thread_id} -> {e}"
+            )
+
+            return []
+
+
+def foolfuuka_post_to_dict(
+    post,
+    thread_id,
+    board_name,
+    archive_name,
+    thread_url,
+    is_op
+):
+    """
+    Convert a FoolFuuka API POST OBJECT dict into the
+    flat dict shape used by the rest of the app.
+    """
+
+    # Prefer the sanitized/processed comment; fall back
+    # to raw comment, stripping any residual HTML tags.
+
+    comment_raw = (
+        post.get("comment_sanitized")
+        or post.get("comment_processed")
+        or post.get("comment")
+        or ""
+    )
+
+    comment = normalize_whitespace(
+        BeautifulSoup(
+            comment_raw,
+            "html.parser"
+        ).get_text(" ", strip=True)
+    )
+
+    subject = normalize_whitespace(
+        post.get("title_processed")
+        or post.get("title")
+        or ""
+    )
+
+    author = (
+        post.get("name_processed")
+        or post.get("name")
+        or "Anonymous"
+    )
+
+    return {
+
+        "archive":
+            archive_name,
+
+        "board":
+            board_name,
+
+        "thread_id":
+            thread_id,
+
+        "post_id":
+            str(post.get("num", "")),
+
+        "is_op":
+            is_op,
+
+        "thread_subject":
+            subject,
+
+        "author":
+            author,
+
+        "timestamp":
+            str(post.get("timestamp", "")),
+
+        "content":
+            comment,
+
+        "url":
+            thread_url,
+    }
+
+
+# =====================================================
+# ARCHIVE-NATIVE HTML SEARCH URL BUILDER
+# (warosu + 4plebs only)
 # =====================================================
 
 def build_search_url(
@@ -295,13 +740,28 @@ def build_search_url(
     board_name,
     keyword,
     mode,
-    page=1
+    page=1,
+    order="Newest first"
 ):
     """
-    Build an archive-specific search URL.
+    Build an archive-specific HTML search URL.
+
+    FIX (warosu):
+      Subject mode: search_res=op + search_op=op
+        (was search_res=post / search_op=all — returned
+         every matching post, not just thread OPs)
+      OP Text mode: search_res=op
+        (was search_res=post — same problem)
+
+    FIX (4plebs):
+      Added sort order support.
+      "Oldest first" appends /order/asc/ to the path.
+      e.g. /adv/search/subject/egg/order/asc/
+           /adv/search/subject/egg/order/asc/page/2/
 
     mode: "Subject" | "OP Text"
     page: 1-based page number
+    order: "Newest first" | "Oldest first"  (4plebs only)
     """
 
     kw = quote(keyword)
@@ -327,12 +787,12 @@ def build_search_url(
                 f"&search_datefrom="
                 f"&search_dateto="
                 f"&search_media_hash="
-                f"&search_op=all"
+                f"&search_op=op"        # FIX: was "all"
                 f"&search_del=dontcare"
                 f"&search_int=dontcare"
                 f"&search_ord=new"
                 f"&search_capcode=all"
-                f"&search_res=post"
+                f"&search_res=op"       # FIX: was "post"
             )
 
         else:  # OP Text
@@ -355,7 +815,7 @@ def build_search_url(
                 f"&search_int=dontcare"
                 f"&search_ord=new"
                 f"&search_capcode=all"
-                f"&search_res=post"
+                f"&search_res=op"       # FIX: was "post"
             )
 
         if page > 1:
@@ -364,22 +824,30 @@ def build_search_url(
         return url
 
     # -------------------------------------------------
-    # 4PLEBS / DESUARCHIVE / B4K: path-based search
+    # 4PLEBS: path-based search with sort order
     # -------------------------------------------------
 
-    base = ARCHIVES[archive_name]["base"]
+    base = ARCHIVES["4plebs"]["base"]
+
+    asc_suffix = (
+        "/order/asc"
+        if order == "Oldest first"
+        else ""
+    )
 
     if mode == "Subject":
 
         if page == 1:
             return (
                 f"{base}/{board_name}/"
-                f"search/subject/{kw}/"
+                f"search/subject/{kw}"
+                f"{asc_suffix}/"
             )
 
         return (
             f"{base}/{board_name}/"
-            f"search/subject/{kw}/"
+            f"search/subject/{kw}"
+            f"{asc_suffix}/"
             f"page/{page}/"
         )
 
@@ -388,21 +856,24 @@ def build_search_url(
         if page == 1:
             return (
                 f"{base}/{board_name}/"
-                f"search/text/{kw}/type/op/"
+                f"search/text/{kw}/type/op"
+                f"{asc_suffix}/"
             )
 
         return (
             f"{base}/{board_name}/"
-            f"search/text/{kw}/type/op/"
+            f"search/text/{kw}/type/op"
+            f"{asc_suffix}/"
             f"page/{page}/"
         )
 
 
 # =====================================================
-# ARCHIVE-NATIVE SEARCH
+# ARCHIVE-NATIVE HTML SEARCH
+# (warosu + 4plebs only)
 # =====================================================
 
-def search_thread_ids(
+def search_thread_ids_html(
     archive_name,
     board_name,
     keyword,
@@ -410,14 +881,12 @@ def search_thread_ids(
     limit,
     start_page=1,
     pages_to_scan=None,
-    status_text=None
+    status_text=None,
+    order="Newest first"
 ):
     """
-    Query the archive's own search endpoint and
+    Query the archive's own HTML search endpoint and
     collect up to `limit` matching thread IDs.
-
-    start_page / pages_to_scan optionally restrict
-    which pages of search results to read.
     """
 
     collected = []
@@ -439,10 +908,11 @@ def search_thread_ids(
             board_name,
             keyword,
             mode,
-            page
+            page,
+            order=order
         )
 
-        print(f"\nSEARCH PAGE {page}")
+        print(f"\nHTML SEARCH PAGE {page}")
         print(url)
 
         if status_text:
@@ -476,8 +946,7 @@ def search_thread_ids(
             found_this_page = 0
 
             # ------------------------------------------
-            # Try article-based extraction first
-            # (4plebs, desuarchive, b4k)
+            # Try article-based extraction first (4plebs)
             # ------------------------------------------
 
             articles = soup.select("article.post")
@@ -518,8 +987,7 @@ def search_thread_ids(
             else:
 
                 # --------------------------------------
-                # Fallback: scan all links for /thread/
-                # (warosu and other archives)
+                # Fallback: scan all links (warosu)
                 # --------------------------------------
 
                 links = soup.find_all(
@@ -558,10 +1026,6 @@ def search_thread_ids(
                 f"THREADS ON PAGE {page}"
             )
 
-            # ------------------------------------------
-            # Stop if nothing came back on this page
-            # ------------------------------------------
-
             if found_this_page == 0:
 
                 print("NO MORE RESULTS")
@@ -571,17 +1035,18 @@ def search_thread_ids(
 
         except Exception as e:
 
-            print(f"SEARCH ERROR: {e}")
+            print(f"HTML SEARCH ERROR: {e}")
             break
 
     return collected
 
 
 # =====================================================
-# PAGE FETCHING  (used when search is Disabled)
+# HTML PAGE FETCHING
+# (used when search is Disabled, warosu + 4plebs)
 # =====================================================
 
-def fetch_page_ids(
+def fetch_page_ids_html(
     archive_name,
     board_name,
     page
@@ -593,7 +1058,7 @@ def fetch_page_ids(
         page
     )
 
-    print(f"\nFETCHING PAGE: {page}")
+    print(f"\nFETCHING HTML PAGE: {page}")
     print(url)
 
     try:
@@ -699,7 +1164,7 @@ def fetch_page_ids(
 
 # =====================================================
 # THREAD ID EXTRACTION
-# (search-first, page-scan fallback)
+# Dispatches to API (desuarchive/b4k) or HTML path
 # =====================================================
 
 def extract_thread_ids(
@@ -711,27 +1176,144 @@ def extract_thread_ids(
     start_page=1,
     pages_to_scan=None,
     progress_bar=None,
-    status_text=None
+    status_text=None,
+    order="Newest first"
 ):
-    """
-    If a search keyword + mode are provided, use the
-    archive's native search endpoint — much faster.
 
-    Otherwise fall back to page-scanning.
-    """
+    use_search = (
+        search_kw
+        and search_md
+        and search_md != "Disabled"
+    )
+
+    use_api = (
+        archive_name in FOOLFUUKA_API_ARCHIVES
+    )
 
     # =========================================
-    # FAST PATH: archive-native search
+    # FOOLFUUKA API PATH (desuarchive + b4k)
     # =========================================
 
-    if search_kw and search_md and search_md != "Disabled":
+    if use_api:
+
+        # -----------------------------------------
+        # SEARCH via API
+        # -----------------------------------------
+
+        if use_search:
+
+            print(
+                f"FOOLFUUKA API SEARCH: "
+                f'"{search_kw}" ({search_md})'
+            )
+
+            return foolfuuka_search(
+                archive_name,
+                board_name,
+                search_kw,
+                search_md,
+                limit,
+                start_pg=start_page,
+                pages=pages_to_scan,
+                status_text=status_text
+            )
+
+        # -----------------------------------------
+        # INDEX SCAN via API
+        # -----------------------------------------
+
+        print("FOOLFUUKA API INDEX SCAN")
+
+        collected = []
+        seen = set()
+
+        if pages_to_scan is None:
+
+            end_page = MAX_SCAN_PAGES
+
+        else:
+
+            end_page = (
+                start_page
+                + pages_to_scan
+                - 1
+            )
+
+        total_pages = (
+            end_page
+            - start_page
+            + 1
+        )
+
+        for page in range(
+            start_page,
+            end_page + 1
+        ):
+
+            if progress_bar:
+
+                progress = int(
+                    ((page - start_page + 1) / total_pages)
+                    * 100
+                )
+
+                progress_bar.progress(
+                    min(progress, 100)
+                )
+
+            if status_text:
+
+                status_text.caption(
+                    f"API index page {page} | "
+                    f"Collected {len(collected)} threads"
+                )
+
+            ids = foolfuuka_index_page(
+                archive_name,
+                board_name,
+                page
+            )
+
+            if not ids:
+
+                print(
+                    f"EMPTY API PAGE: {page}"
+                )
+
+                break
+
+            for tid in ids:
+
+                if tid in seen:
+                    continue
+
+                seen.add(tid)
+                collected.append(tid)
+
+                if len(collected) >= limit:
+
+                    print("LIMIT REACHED")
+
+                    return collected[:limit]
+
+        return collected[:limit]
+
+    # =========================================
+    # HTML PATH (warosu + 4plebs)
+    # =========================================
+
+    # -----------------------------------------
+    # SEARCH via HTML
+    # -----------------------------------------
+
+    if use_search:
 
         print(
-            f"USING ARCHIVE SEARCH: "
+            f"HTML SEARCH: "
             f'"{search_kw}" ({search_md})'
         )
 
-        return search_thread_ids(
+        return search_thread_ids_html(
             archive_name,
             board_name,
             search_kw,
@@ -739,12 +1321,15 @@ def extract_thread_ids(
             limit,
             start_page=start_page,
             pages_to_scan=pages_to_scan,
-            status_text=status_text
+            status_text=status_text,
+            order=order
         )
 
-    # =========================================
-    # SLOW PATH: page-by-page scan
-    # =========================================
+    # -----------------------------------------
+    # PAGE SCAN via HTML
+    # -----------------------------------------
+
+    print("HTML PAGE SCAN")
 
     collected = []
     seen = set()
@@ -794,7 +1379,7 @@ def extract_thread_ids(
                 f"Collected {len(collected)} threads"
             )
 
-        page_thread_ids = fetch_page_ids(
+        page_thread_ids = fetch_page_ids_html(
             archive_name,
             board_name,
             page
@@ -840,10 +1425,11 @@ def extract_thread_ids(
 
 
 # =====================================================
-# PARSER
+# HTML THREAD PARSER
+# (warosu + 4plebs)
 # =====================================================
 
-def parse_thread(
+def parse_thread_html(
     html,
     thread_id,
     board_name,
@@ -980,10 +1566,11 @@ def parse_thread(
 
 
 # =====================================================
-# FETCH THREAD
+# HTML FETCH THREAD
+# (warosu + 4plebs)
 # =====================================================
 
-async def fetch_thread(
+async def fetch_thread_html(
     session,
     semaphore,
     archive_name,
@@ -1014,7 +1601,7 @@ async def fetch_thread(
 
                 html = await response.text()
 
-                parsed = parse_thread(
+                parsed = parse_thread_html(
                     html,
                     thread_id,
                     board_name,
@@ -1026,7 +1613,7 @@ async def fetch_thread(
         except Exception as e:
 
             print(
-                f"THREAD FETCH ERROR: "
+                f"HTML THREAD FETCH ERROR: "
                 f"{thread_id} -> {e}"
             )
 
@@ -1035,6 +1622,7 @@ async def fetch_thread(
 
 # =====================================================
 # SCRAPER
+# Dispatches to API fetcher or HTML fetcher
 # =====================================================
 
 async def scrape_threads(
@@ -1059,19 +1647,37 @@ async def scrape_threads(
         connector=connector
     ) as session:
 
-        tasks = [
+        if archive_name in FOOLFUUKA_API_ARCHIVES:
 
-            fetch_thread(
-                session,
-                semaphore,
-                archive_name,
-                board_name,
-                thread_id,
-                timeout_seconds
-            )
+            tasks = [
 
-            for thread_id in thread_ids
-        ]
+                foolfuuka_fetch_thread(
+                    session,
+                    semaphore,
+                    archive_name,
+                    board_name,
+                    thread_id,
+                    timeout_seconds
+                )
+
+                for thread_id in thread_ids
+            ]
+
+        else:
+
+            tasks = [
+
+                fetch_thread_html(
+                    session,
+                    semaphore,
+                    archive_name,
+                    board_name,
+                    thread_id,
+                    timeout_seconds
+                )
+
+                for thread_id in thread_ids
+            ]
 
         results = await asyncio.gather(
             *tasks
@@ -1209,7 +1815,6 @@ if st.button("Start Crawl"):
 
     collecting_placeholder = st.empty()
 
-    # Different message depending on mode
     if search_mode != "Disabled":
 
         collecting_placeholder.info(
@@ -1262,7 +1867,9 @@ if st.button("Start Crawl"):
         ),
 
         progress_bar=loading_bar,
-        status_text=loading_status
+        status_text=loading_status,
+
+        order=sort_order,
     )
 
     loading_bar.progress(100)
